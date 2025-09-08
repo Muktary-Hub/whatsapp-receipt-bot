@@ -10,7 +10,8 @@ aptPkgs = [
   "libgtk-3-0",
   "libgbm-dev",
   "libxss1",
-  "libasound2",
+  "libasound2t64", # <-- This is the corrected package name
   "libxshmfence1"
 ]
+
 
