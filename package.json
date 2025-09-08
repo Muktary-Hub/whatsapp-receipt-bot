@@ -1,0 +1,18 @@
+{
+  "name": "whatsapp-receipt-bot",
+  "version": "1.0.0",
+  "description": "A WhatsApp bot for generating receipts.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "whatsapp-web.js": "^1.23.0",
+    "qrcode-terminal": "^0.12.0",
+    "mongodb": "^6.5.0"
+  },
+  "engines": {
+    "node": "18.x"
+  }
+}
+
