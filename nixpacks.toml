@@ -1,17 +1,11 @@
-# nixpacks.toml
-# This file tells Railway to install the system libraries needed for Puppeteer/Chromium
-
-[phases.install]
+[phases.setup]
 aptPkgs = [
-  "libnss3",
-  "libatk1.0-0",
-  "libatk-bridge2.0-0",
-  "libcups2",
-  "libgtk-3-0",
-  "libgbm-dev",
-  "libxss1",
-  "libasound2t64", # <-- This is the corrected package name
-  "libxshmfence1"
+    # Puppeteer dependencies
+    'libnss3', 'libatk1.0-0', 'libatk-bridge2.0-0', 'libcups2', 
+    'libgtk-3-0', 'libgbm-dev', 'libxss1', 'libasound2t64', 'libxshmfence1',
+    # Canvas dependencies
+    'build-essential', 'libcairo2-dev', 'libpango1.0-dev', 'libjpeg-dev', 
+    'libgif-dev', 'librsvg2-dev'
 ]
 
 
