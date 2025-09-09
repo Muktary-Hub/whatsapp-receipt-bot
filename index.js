@@ -187,136 +187,40 @@ client.on('message', async msg => {
         const userSession = userStates.get(senderId) || {};
         const currentState = userSession.state;
 
-        // --- EDITING FLOW ---
-        if (currentState && currentState.startsWith('awaiting_edit_choice')) {
-            const choice = parseInt(text, 10);
-            if (choice >= 1 && choice <= 3) {
-                 let nextState = '';
-                let prompt = '';
-                if (choice === 1) {
-                    nextState = 'editing_customer_name';
-                    prompt = 'What is the new customer name?';
-                } else if (choice === 2) {
-                    nextState = 'editing_items';
-                    prompt = 'Please re-enter all the items for the receipt, separated by commas.';
-                } else if (choice === 3) {
-                    nextState = 'editing_payment_method';
-                    prompt = 'What is the new payment method?';
-                }
-                userSession.state = nextState;
-                userStates.set(senderId, userSession);
-                await sendMessageWithDelay(msg, prompt);
-            } else {
-                 await sendMessageWithDelay(msg, "Invalid choice. Please send a number (1-3).");
-            }
-            return;
-        }
-        if (currentState === 'editing_customer_name') {
-            userSession.receiptToEdit.customerName = text;
-            await regenerateAndSend(senderId, user, userSession.receiptToEdit, msg);
-            return;
-        }
-        if (currentState === 'editing_items') {
-            userSession.receiptToEdit.items = text.split(',').map(item => item.trim());
-            userSession.state = 'editing_prices';
-            userStates.set(senderId, userSession);
-            await sendMessageWithDelay(msg, "Items updated. Now, please re-enter all the prices in the correct order.");
-            return;
-        }
-        if (currentState === 'editing_prices') {
-            userSession.receiptToEdit.prices = text.split(',').map(p => p.trim());
-            if (userSession.receiptToEdit.items.length !== userSession.receiptToEdit.prices.length) {
-                await sendMessageWithDelay(msg, "The number of items and prices don't match. Please try editing again by typing 'edit'.");
-                userStates.delete(senderId);
-                return;
-            }
-            await regenerateAndSend(senderId, user, userSession.receiptToEdit, msg);
-            return;
-        }
-        if (currentState === 'editing_payment_method') {
-            userSession.receiptToEdit.paymentMethod = text;
-            await regenerateAndSend(senderId, user, userSession.receiptToEdit, msg);
-            return;
-        }
-
-        // --- HISTORY RESEND LOGIC ---
-        if (currentState === 'awaiting_history_choice') {
-            const choice = parseInt(text, 10);
-            if (choice >= 1 && choice <= userSession.history.length) {
-                const selectedReceipt = userSession.history[choice - 1];
-                await sendMessageWithDelay(msg, `Resending receipt for *${selectedReceipt.customerName}*...`);
-                const urlParams = new URLSearchParams({
-                    bn: user.brandName, bc: user.brandColor, logo: user.logoUrl || '',
-                    cn: selectedReceipt.customerName, items: selectedReceipt.items.join('||'),
-                    prices: selectedReceipt.prices.join(','), pm: selectedReceipt.paymentMethod,
-                    addr: user.address || '', ci: user.contactInfo || ''
-                });
-                const fullUrl = `${RECEIPT_BASE_URL}template.${user.preferredTemplate}.html?${urlParams.toString()}`;
-                const page = await client.pupBrowser.newPage();
-                await page.setViewport({ width: 800, height: 800, deviceScaleFactor: 2 });
-                await page.goto(fullUrl, { waitUntil: 'networkidle0' });
-                const screenshotBuffer = await page.screenshot({ fullPage: true, type: 'png' });
-                await page.close();
-                const media = new MessageMedia('image/png', screenshotBuffer.toString('base64'), 'SmartReceipt.png');
-                await client.sendMessage(senderId, media, { caption: `Here is the receipt for ${selectedReceipt.customerName}.` });
-                userStates.delete(senderId);
-            } else {
-                await sendMessageWithDelay(msg, "Invalid number. Please reply with a number from the list (1-5).");
-            }
-            return;
-        }
-
-        // --- COMMANDS ---
+        // --- COMMAND HANDLING FIRST ---
         if (lowerCaseText === 'stats') {
-            if (user && user.onboardingComplete) {
-                const now = new Date();
-                const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-                const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
-                const receipts = await db.collection('receipts').find({ userId: senderId, createdAt: { $gte: startOfMonth, $lte: endOfMonth } }).toArray();
-                const totalSales = receipts.reduce((sum, receipt) => sum + receipt.totalAmount, 0);
-                const receiptCount = receipts.length;
-                const monthName = startOfMonth.toLocaleString('default', { month: 'long' });
-                let statsMessage = `📊 *Your Stats for ${monthName}*\n\n*Receipts Generated:* ${receiptCount}\n*Total Sales:* ₦${totalSales.toLocaleString()}`;
-                await sendMessageWithDelay(msg, statsMessage);
-            } else {
-                await sendMessageWithDelay(msg, "You need to complete your setup first to view stats.");
-            }
+            if (!user || !user.onboardingComplete) { await sendMessageWithDelay(msg, "Please complete your setup first."); return; }
+            const now = new Date();
+            const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+            const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+            const receipts = await db.collection('receipts').find({ userId: senderId, createdAt: { $gte: startOfMonth, $lte: endOfMonth } }).toArray();
+            const totalSales = receipts.reduce((sum, receipt) => sum + receipt.totalAmount, 0);
+            const receiptCount = receipts.length;
+            const monthName = startOfMonth.toLocaleString('default', { month: 'long' });
+            let statsMessage = `📊 *Your Stats for ${monthName}*\n\n*Receipts Generated:* ${receiptCount}\n*Total Sales:* ₦${totalSales.toLocaleString()}`;
+            await sendMessageWithDelay(msg, statsMessage);
             return;
         }
 
         if (lowerCaseText === 'history') {
-            if (user && user.onboardingComplete) {
-                const recentReceipts = await db.collection('receipts').find({ userId: senderId }).sort({ createdAt: -1 }).limit(5).toArray();
-                if (recentReceipts.length === 0) {
-                    await sendMessageWithDelay(msg, "You haven't generated any receipts yet.");
-                    return;
-                }
-                let historyMessage = "🧾 *Your 5 Most Recent Receipts:*\n\n";
-                recentReceipts.forEach((receipt, index) => {
-                    historyMessage += `*${index + 1}.* Receipt for *${receipt.customerName}* - ₦${receipt.totalAmount.toLocaleString()}\n`;
-                });
-                historyMessage += "\nTo resend a receipt, just reply with its number (1-5).";
-                userStates.set(senderId, { state: 'awaiting_history_choice', history: recentReceipts });
-                await sendMessageWithDelay(msg, historyMessage);
-            } else {
-                await sendMessageWithDelay(msg, "You need to complete your setup first to view your history.");
-            }
+            if (!user || !user.onboardingComplete) { await sendMessageWithDelay(msg, "Please complete your setup first."); return; }
+            const recentReceipts = await db.collection('receipts').find({ userId: senderId }).sort({ createdAt: -1 }).limit(5).toArray();
+            if (recentReceipts.length === 0) { await sendMessageWithDelay(msg, "You haven't generated any receipts yet."); return; }
+            let historyMessage = "🧾 *Your 5 Most Recent Receipts:*\n\n";
+            recentReceipts.forEach((r, i) => { historyMessage += `*${i + 1}.* For *${r.customerName}* - ₦${r.totalAmount.toLocaleString()}\n`; });
+            historyMessage += "\nTo resend a receipt, just reply with its number (1-5).";
+            userStates.set(senderId, { state: 'awaiting_history_choice', history: recentReceipts });
+            await sendMessageWithDelay(msg, historyMessage);
             return;
         }
 
         if (lowerCaseText === 'edit') {
-            if (user && user.onboardingComplete) {
-                const lastReceipt = await db.collection('receipts').findOne({ userId: senderId }, { sort: { createdAt: -1 } });
-                if (!lastReceipt) {
-                    await sendMessageWithDelay(msg, "You don't have any recent receipts to edit.");
-                    return;
-                }
-                const editMessage = `Let's edit your last receipt (for *${lastReceipt.customerName}*).\n\nWhat would you like to change?\n*1.* Customer Name\n*2.* Items & Prices\n*3.* Payment Method`;
-                userStates.set(senderId, { state: 'awaiting_edit_choice', receiptToEdit: lastReceipt });
-                await sendMessageWithDelay(msg, editMessage);
-            } else {
-                await sendMessageWithDelay(msg, "Please complete your setup before using this command.");
-            }
+            if (!user || !user.onboardingComplete) { await sendMessageWithDelay(msg, "Please complete your setup first."); return; }
+            const lastReceipt = await db.collection('receipts').findOne({ userId: senderId }, { sort: { createdAt: -1 } });
+            if (!lastReceipt) { await sendMessageWithDelay(msg, "You don't have any recent receipts to edit."); return; }
+            const editMessage = `Let's edit your last receipt (for *${lastReceipt.customerName}*).\n\nWhat would you like to change?\n*1.* Customer Name\n*2.* Items & Prices\n*3.* Payment Method`;
+            userStates.set(senderId, { state: 'awaiting_edit_choice', receiptToEdit: lastReceipt });
+            await sendMessageWithDelay(msg, editMessage);
             return;
         }
 
@@ -326,9 +230,7 @@ client.on('message', async msg => {
             if (accountDetails && accountDetails.bankName) {
                 const reply = `To get lifetime access for *₦${LIFETIME_FEE.toLocaleString()}*, please transfer to this account:\n\n` + `*Bank:* ${accountDetails.bankName}\n` + `*Account Number:* ${accountDetails.accountNumber}\n\n` + `Your access will be unlocked automatically after payment.`;
                 await msg.reply(reply);
-            } else {
-                await msg.reply("Sorry, I couldn't generate a payment account right now. Please try again later.");
-            }
+            } else { await msg.reply("Sorry, I couldn't generate a payment account right now. Please try again later."); }
             return;
         }
 
@@ -347,8 +249,52 @@ client.on('message', async msg => {
             }
             return;
         }
+        
 
+        // --- STATE-BASED CONVERSATIONS ---
         switch (currentState) {
+            case 'awaiting_edit_choice':
+                const choice = parseInt(text, 10);
+                if (choice === 1) { userSession.state = 'editing_customer_name'; await sendMessageWithDelay(msg, 'What is the new customer name?'); }
+                else if (choice === 2) { userSession.state = 'editing_items'; await sendMessageWithDelay(msg, 'Please re-enter all items, separated by commas.'); }
+                else if (choice === 3) { userSession.state = 'editing_payment_method'; await sendMessageWithDelay(msg, 'What is the new payment method?'); }
+                else { await sendMessageWithDelay(msg, "Invalid choice. Please send a number (1-3)."); return; }
+                userStates.set(senderId, userSession);
+                break;
+            case 'editing_customer_name':
+                userSession.receiptToEdit.customerName = text;
+                await regenerateAndSend(senderId, user, userSession.receiptToEdit, msg);
+                break;
+            case 'editing_items':
+                userSession.receiptToEdit.items = text.split(',').map(item => item.trim());
+                userSession.state = 'editing_prices';
+                userStates.set(senderId, userSession);
+                await sendMessageWithDelay(msg, "Items updated. Now, please re-enter all prices in the correct order.");
+                break;
+            case 'editing_prices':
+                userSession.receiptToEdit.prices = text.split(',').map(p => p.trim());
+                if (userSession.receiptToEdit.items.length !== userSession.receiptToEdit.prices.length) {
+                    await sendMessageWithDelay(msg, "Items and prices don't match. Please try editing again by typing 'edit'.");
+                    userStates.delete(senderId);
+                    return;
+                }
+                await regenerateAndSend(senderId, user, userSession.receiptToEdit, msg);
+                break;
+            case 'editing_payment_method':
+                userSession.receiptToEdit.paymentMethod = text;
+                await regenerateAndSend(senderId, user, userSession.receiptToEdit, msg);
+                break;
+
+            case 'awaiting_history_choice':
+                const historyChoice = parseInt(text, 10);
+                if (historyChoice >= 1 && historyChoice <= userSession.history.length) {
+                    const selectedReceipt = userSession.history[historyChoice - 1];
+                    await regenerateAndSend(senderId, user, selectedReceipt, msg, true); // true = isResend
+                } else {
+                    await sendMessageWithDelay(msg, "Invalid number. Please reply with a number from the list (1-5).");
+                }
+                break;
+
             case 'awaiting_brand_name':
                 await db.collection('users').deleteMany({ userId: senderId });
                 await db.collection('users').insertOne({ userId: senderId, brandName: text, onboardingComplete: false, receiptCount: 0, isPaid: false, createdAt: new Date() });
@@ -389,11 +335,11 @@ client.on('message', async msg => {
                 await sendMessageWithDelay(msg, `✅ *Setup Complete!* Your brand profile is all set.\n\nTo create your first receipt, just type:\n*'new receipt'*`);
                 break;
             case 'awaiting_template_choice':
-                const choice = parseInt(text, 10);
-                if (choice >= 1 && choice <= 6) {
-                    await db.collection('users').updateOne({ userId: senderId }, { $set: { preferredTemplate: choice } });
+                const templateChoice = parseInt(text, 10);
+                if (templateChoice >= 1 && templateChoice <= 6) {
+                    await db.collection('users').updateOne({ userId: senderId }, { $set: { preferredTemplate: templateChoice } });
                     userStates.set(senderId, { state: 'receipt_customer_name', receiptData: {} });
-                    await sendMessageWithDelay(msg, `✅ Template #${choice} saved!\n\nNow, let's create your receipt. Who is the customer?`);
+                    await sendMessageWithDelay(msg, `✅ Template #${templateChoice} saved!\n\nNow, let's create your receipt. Who is the customer?`);
                 } else {
                     await sendMessageWithDelay(msg, "Invalid selection. Please send a single number between 1 and 6.");
                 }
@@ -426,34 +372,15 @@ client.on('message', async msg => {
                 
                 const subtotal = userSession.receiptData.prices.reduce((sum, price) => sum + parseFloat(price || 0), 0);
 
-                const urlParams = new URLSearchParams({
-                    bn: user.brandName, bc: user.brandColor, logo: user.logoUrl || '',
-                    cn: userSession.receiptData.customerName, items: userSession.receiptData.items.join('||'),
-                    prices: userSession.receiptData.prices.join(','), pm: userSession.receiptData.paymentMethod,
-                    addr: user.address || '', ci: user.contactInfo || ''
-                });
+                const newReceiptId = (await db.collection('receipts').insertOne({
+                    userId: senderId, createdAt: new Date(), customerName: userSession.receiptData.customerName,
+                    totalAmount: subtotal, items: userSession.receiptData.items,
+                    prices: userSession.receiptData.prices, paymentMethod: userSession.receiptData.paymentMethod
+                })).insertedId;
                 
-                const fullUrl = `${RECEIPT_BASE_URL}template.${user.preferredTemplate}.html?${urlParams.toString()}`;
-                console.log(`Generating receipt from URL: ${fullUrl}`);
+                const newReceipt = await db.collection('receipts').findOne({_id: newReceiptId});
 
-                const page = await client.pupBrowser.newPage();
-                await page.setViewport({ width: 800, height: 800, deviceScaleFactor: 2 });
-                await page.goto(fullUrl, { waitUntil: 'networkidle0' });
-                const screenshotBuffer = await page.screenshot({ fullPage: true, type: 'png' });
-                await page.close();
-
-                const media = new MessageMedia('image/png', screenshotBuffer.toString('base64'), 'SmartReceipt.png');
-                await client.sendMessage(senderId, media, { caption: `Here is the receipt for ${userSession.receiptData.customerName}.` });
-                
-                await db.collection('receipts').insertOne({
-                    userId: senderId,
-                    createdAt: new Date(),
-                    customerName: userSession.receiptData.customerName,
-                    totalAmount: subtotal,
-                    items: userSession.receiptData.items,
-                    prices: userSession.receiptData.prices,
-                    paymentMethod: userSession.receiptData.paymentMethod
-                });
+                await regenerateAndSend(senderId, user, newReceipt, msg);
 
                 if (!isAdmin && !user.isPaid) {
                     await db.collection('users').updateOne({ userId: senderId }, { $inc: { receiptCount: 1 } });
@@ -480,6 +407,43 @@ client.on('message', async msg => {
     }
 });
 
+// --- REGENERATION FUNCTION ---
+async function regenerateAndSend(senderId, user, receiptData, msg, isResend = false) {
+    if(!isResend) await sendMessageWithDelay(msg, `✅ Got it! Regenerating your receipt now...`);
+
+    const subtotal = receiptData.prices.reduce((sum, price) => sum + parseFloat(price || 0), 0);
+    
+    if(!isResend) {
+        await db.collection('receipts').updateOne(
+            { _id: new ObjectId(receiptData._id) },
+            { $set: {
+                customerName: receiptData.customerName, items: receiptData.items,
+                prices: receiptData.prices, paymentMethod: receiptData.paymentMethod,
+                totalAmount: subtotal
+            }}
+        );
+    }
+    
+    const urlParams = new URLSearchParams({
+        bn: user.brandName, bc: user.brandColor, logo: user.logoUrl || '',
+        cn: receiptData.customerName, items: receiptData.items.join('||'),
+        prices: receiptData.prices.join(','), pm: receiptData.paymentMethod,
+        addr: user.address || '', ci: user.contactInfo || ''
+    });
+    
+    const fullUrl = `${RECEIPT_BASE_URL}template.${user.preferredTemplate}.html?${urlParams.toString()}`;
+    const page = await client.pupBrowser.newPage();
+    await page.setViewport({ width: 800, height: 800, deviceScaleFactor: 2 });
+    await page.goto(fullUrl, { waitUntil: 'networkidle0' });
+    const screenshotBuffer = await page.screenshot({ fullPage: true, type: 'png' });
+    await page.close();
+    
+    const media = new MessageMedia('image/png', screenshotBuffer.toString('base64'), 'SmartReceipt.png');
+    const caption = isResend ? `Here is the receipt for ${receiptData.customerName}.` : `Here is the updated receipt for ${receiptData.customerName}.`;
+    await client.sendMessage(senderId, media, { caption: caption });
+    
+    userStates.delete(senderId);
+}
 
 // --- Main Function ---
 async function startBot() {
