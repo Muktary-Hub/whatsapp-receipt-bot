@@ -22,9 +22,8 @@ async function connectToDB() {
     }
 }
 
-// Helper function for delayed sending to appear more human
+// Helper function for delayed sending
 function sendMessageWithDelay(msg, text) {
-    // Random delay between 1.5 and 2.5 seconds
     const delay = Math.floor(Math.random() * 1000) + 1500; 
     return new Promise(resolve => {
         setTimeout(async () => {
@@ -36,9 +35,7 @@ function sendMessageWithDelay(msg, text) {
 
 // --- WhatsApp Client Initialization ---
 const client = new Client({
-    authStrategy: new LocalAuth({
-        dataPath: '/app/.wwebjs_auth' 
-    }),
+    authStrategy: new LocalAuth({ dataPath: '/app/.wwebjs_auth' }),
     puppeteer: {
         headless: true,
         args: ['--no-sandbox', '--disable-setuid-sandbox'],
@@ -47,7 +44,7 @@ const client = new Client({
 
 // --- Event Handlers ---
 client.on('qr', qr => {
-    console.log('QR CODE RECEIVED! See instructions below to scan.');
+    console.log('QR CODE RECEIVED!');
     console.log('--- QR STRING START ---');
     console.log(qr);
     console.log('--- QR STRING END ---');
@@ -70,32 +67,53 @@ client.on('message', async msg => {
     const currentState = userSession.state;
 
     // --- Command Handling ---
-    if (lowerCaseText === 'new receipt') {
+    if (lowerCaseText === 'new receipt' || lowerCaseText === 'changereceipt') {
         const user = await db.collection('users').findOne({ userId: senderId });
         if (user && user.onboardingComplete) {
-            if (user.preferredTemplate) {
+            if (lowerCaseText === 'changereceipt' || !user.preferredTemplate) {
+                userStates.set(senderId, { state: 'awaiting_template_choice' });
+                await sendMessageWithDelay(msg, "Please choose your receipt template.\n\nView our designs in the catalog, then send the number of your choice (1-5).");
+            } else {
                 userStates.set(senderId, { state: 'receipt_customer_name', receiptData: {} });
                 await sendMessageWithDelay(msg, '🧾 *New Receipt Started*\n\nWho is the customer?');
-            } else {
-                userStates.set(senderId, { state: 'receipt_awaiting_template_choice' });
-                await sendMessageWithDelay(msg, "First, please choose your preferred receipt template.\n\nPlease view our designs in the catalog, then send the number of your choice (1-5).");
             }
         } else {
-            await sendMessageWithDelay(msg, "You need to complete your brand setup first! Just send any message like 'Hi' to get started.");
+            // User is not onboarded yet, trigger onboarding.
+            userStates.set(senderId, { state: 'awaiting_brand_name' });
+            await sendMessageWithDelay(msg, "👋 Welcome to SmartReceipt!\n\nLet's get your brand set up. First, what is your business or brand name?");
         }
-        return;
-    }
-
-    if (lowerCaseText === 'changereceipt') {
-        userStates.set(senderId, { state: 'receipt_awaiting_template_choice' });
-        await sendMessageWithDelay(msg, "Let's change your receipt style.\n\nPlease view our designs in the catalog, then send the number of your new choice (1-5).");
         return;
     }
 
     // --- State-Based Conversation Logic ---
     switch (currentState) {
+        // ONBOARDING FLOW (COMPLETE VERSION)
+        case 'awaiting_brand_name':
+            await db.collection('users').insertOne({ userId: senderId, brandName: text, onboardingComplete: false, createdAt: new Date() });
+            userStates.set(senderId, { state: 'awaiting_brand_color' });
+            await sendMessageWithDelay(msg, `Great! Your brand is "${text}".\n\nNow, what is your brand's main color? (e.g., #001232 or "blue")`);
+            break;
+
+        case 'awaiting_brand_color':
+            await db.collection('users').updateOne({ userId: senderId }, { $set: { brandColor: text } });
+            userStates.set(senderId, { state: 'awaiting_address' });
+            await sendMessageWithDelay(msg, `Got it! Your brand color is ${text}.\n\nNext, please provide your business address.`);
+            break;
+
+        case 'awaiting_address':
+            await db.collection('users').updateOne({ userId: senderId }, { $set: { address: text } });
+            userStates.set(senderId, { state: 'awaiting_contact_info' });
+            await sendMessageWithDelay(msg, `Address saved.\n\nFinally, what contact info should be on the receipt? (e.g., a phone number or email)`);
+            break;
+
+        case 'awaiting_contact_info':
+            await db.collection('users').updateOne({ userId: senderId }, { $set: { contactInfo: text, onboardingComplete: true } });
+            userStates.delete(senderId); // End the onboarding session
+            await sendMessageWithDelay(msg, `✅ *Setup Complete!* Your brand profile is all set.\n\nTo create your first receipt, just type the command:\n*'new receipt'*`);
+            break;
+
         // RECEIPT FLOW
-        case 'receipt_awaiting_template_choice':
+        case 'awaiting_template_choice':
             const choice = parseInt(text, 10);
             if (choice >= 1 && choice <= 5) {
                 await db.collection('users').updateOne({ userId: senderId }, { $set: { preferredTemplate: choice } });
@@ -112,38 +130,10 @@ client.on('message', async msg => {
             userStates.set(senderId, userSession);
             await sendMessageWithDelay(msg, `Customer: ${text}\n\nWhat item(s) did they purchase? (Separate with commas, e.g., "Rice, Beans")`);
             break;
-
-        case 'receipt_items':
-            userSession.receiptData.items = text.split(',').map(item => item.trim());
-            userSession.state = 'receipt_prices';
-            userStates.set(senderId, userSession);
-            await sendMessageWithDelay(msg, `Items saved.\n\nNow, enter the price for each item in the same order, separated by commas. (e.g., "500, 300")`);
-            break;
-
-        case 'receipt_prices':
-            userSession.receiptData.prices = text.split(',').map(price => price.trim());
-            userSession.state = 'receipt_payment_method';
-            userStates.set(senderId, userSession);
-            await sendMessageWithDelay(msg, `Prices saved.\n\nWhat was the payment method? (e.g., "Cash", "Bank Transfer")`);
-            break;
-
-        case 'receipt_payment_method':
-            userSession.receiptData.paymentMethod = text;
-            console.log('--- COMPLETE RECEIPT DATA COLLECTED ---', userSession.receiptData);
-            await sendMessageWithDelay(msg, `✅ *Details collected!* Generating your receipt now... (Image generation coming next!)`);
-            userStates.delete(senderId);
-            break;
-
-        // ONBOARDING FLOW
-        case 'awaiting_brand_name':
-            await db.collection('users').insertOne({ userId: senderId, brandName: text, onboardingComplete: false, createdAt: new Date() });
-            userStates.set(senderId, { state: 'awaiting_brand_color' });
-            await sendMessageWithDelay(msg, `Great! Your brand is "${text}".\n\nNow, what is your brand's main color? (e.g., #FF5733 or "orange")`);
-            break;
         
-        // (Add other onboarding states here: brand_color, address, contact_info following the same pattern)
+        // (Add other receipt states here: items, prices, payment_method)
         // ...
-        
+
         default:
             // Default response for users without a current task
             const existingUser = await db.collection('users').findOne({ userId: senderId });
