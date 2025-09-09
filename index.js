@@ -11,10 +11,11 @@ const IMGBB_API_KEY = process.env.IMGBB_API_KEY;
 const RECEIPT_BASE_URL = process.env.RECEIPT_BASE_URL;
 const PP_API_KEY = process.env.PP_API_KEY;
 const PP_SECRET_KEY = process.env.PP_SECRET_KEY;
+const PP_BUSINESS_ID = process.env.PP_BUSINESS_ID; // Your Business ID
 const PORT = 3000;
 
 const DB_NAME = 'receiptBot';
-const ADMIN_NUMBERS = ['2349033358098@c.us', '2347016370067@c.us'];
+const ADMIN_NUMBERS = ['2348146817449@c.us', '2347016370067@c.us'];
 const LIFETIME_FEE = 5000;
 
 // --- Database, State, and Web Server ---
@@ -55,28 +56,36 @@ async function uploadLogo(media) {
     }
 }
 
-// --- PAYMENTPOINT INTEGRATION ---
-async function generateReservedAccount(user) {
+// --- ✨ CORRECTED PAYMENTPOINT INTEGRATION ✨ ---
+async function generateVirtualAccount(user) {
     const options = {
         method: 'POST',
-        url: 'https://api.paymentpoint.co/v1/bank/reserve_account',
-        headers: { 'Content-Type': 'application/json', 'api-key': PP_API_KEY, 'secret-key': PP_SECRET_KEY },
+        url: 'https://api.paymentpoint.co/api/v1/createVirtualAccount',
+        headers: {
+            'Content-Type': 'application/json',
+            'api-key': PP_API_KEY,
+            'Authorization': `Bearer ${PP_SECRET_KEY}`
+        },
         data: {
-            account_name: user.brandName.substring(0, 20),
-            customer_email: `${user.userId.split('@')[0]}@smartreceipt.user`,
-            customer_phone: user.userId.split('@')[0],
-            notification_url: `https://${process.env.RAILWAY_STATIC_URL}/webhook`,
-            amount: LIFETIME_FEE
+            name: user.brandName.substring(0, 30),
+            email: `${user.userId.split('@')[0]}@smartreceipt.user`,
+            phoneNumber: user.userId.split('@')[0],
+            bankCode: ['20946'], // Palmpay Bank Code
+            businessId: PP_BUSINESS_ID
         }
     };
     try {
         const response = await axios.request(options);
-        return response.data;
+        if (response.data && response.data.bankAccounts && response.data.bankAccounts.length > 0) {
+            return response.data.bankAccounts[0];
+        }
+        return null;
     } catch (error) {
         console.error("PaymentPoint Error:", error.response ? error.response.data : error.message);
         return null;
     }
 }
+
 
 // --- WEBHOOK SERVER ROUTES ---
 app.get('/', (req, res) => {
@@ -104,6 +113,7 @@ app.post('/webhook', async (req, res) => {
     }
 });
 
+
 // --- WhatsApp Client Initialization ---
 const client = new Client({
     authStrategy: new LocalAuth({ dataPath: '/app/.wwebjs_auth' }),
@@ -123,11 +133,29 @@ client.on('message', async msg => {
         const text = msg.body.trim();
         const lowerCaseText = text.toLowerCase();
         
+        const user = await db.collection('users').findOne({ userId: senderId });
+        const isAdmin = ADMIN_NUMBERS.includes(senderId);
+
+        // Block 'new receipt' if free limit is used
+        if (lowerCaseText === 'new receipt' && user && !isAdmin && !user.isPaid && user.receiptCount >= 1) {
+            await sendMessageWithDelay(msg, "You have exhausted your free limit. To continue, please pay for lifetime access.");
+            const accountDetails = await generateVirtualAccount(user);
+            if (accountDetails && accountDetails.bankName) {
+                const reply = `To get lifetime access for *₦${LIFETIME_FEE.toLocaleString()}*, please transfer to this account:\n\n` +
+                              `*Bank:* ${accountDetails.bankName}\n` +
+                              `*Account Number:* ${accountDetails.accountNumber}\n\n` +
+                              `Your access will be unlocked automatically after payment.`;
+                await msg.reply(reply);
+            } else {
+                await msg.reply("Sorry, I couldn't generate a payment account right now. Please try again later.");
+            }
+            return;
+        }
+
         const userSession = userStates.get(senderId) || {};
         const currentState = userSession.state;
 
         if (['new receipt', 'changereceipt'].includes(lowerCaseText)) {
-            const user = await db.collection('users').findOne({ userId: senderId });
             if (user && user.onboardingComplete) {
                 if (lowerCaseText === 'changereceipt' || !user.preferredTemplate) {
                     userStates.set(senderId, { state: 'awaiting_template_choice' });
@@ -217,26 +245,6 @@ client.on('message', async msg => {
                 break;
             case 'receipt_payment_method':
                 userSession.receiptData.paymentMethod = text;
-                const user = await db.collection('users').findOne({ userId: senderId });
-                const isAdmin = ADMIN_NUMBERS.includes(senderId);
-
-                // *** CORRECTED PAYWALL LOGIC ***
-                if (!isAdmin && !user.isPaid && user.receiptCount >= 1) {
-                    await sendMessageWithDelay(msg, "You have already used your free receipt. To continue, please pay for lifetime access.");
-                    const accountDetails = await generateReservedAccount(user);
-                    if (accountDetails && accountDetails.bank_name) {
-                        const reply = `To get lifetime access for *₦${LIFETIME_FEE.toLocaleString()}*, please transfer to this account:\n\n` +
-                                      `*Bank:* ${accountDetails.bank_name}\n` +
-                                      `*Account Number:* ${accountDetails.account_number}\n\n` +
-                                      `Your access will be unlocked automatically after payment.`;
-                        await msg.reply(reply);
-                    } else {
-                        await msg.reply("Sorry, I couldn't generate a payment account right now. Please try again later.");
-                    }
-                    userStates.delete(senderId);
-                    return;
-                }
-
                 await sendMessageWithDelay(msg, `✅ *Details collected!* Generating your high-class receipt, please wait...`);
                 
                 const urlParams = new URLSearchParams({
@@ -260,13 +268,13 @@ client.on('message', async msg => {
 
                 if (!isAdmin && !user.isPaid) {
                     await db.collection('users').updateOne({ userId: senderId }, { $inc: { receiptCount: 1 } });
-                    // Immediately send the payment prompt after the first receipt
-                    const accountDetails = await generateReservedAccount(user);
-                    if (accountDetails && accountDetails.bank_name) {
+                    // Immediately send the payment prompt
+                    const accountDetails = await generateVirtualAccount(user);
+                    if (accountDetails && accountDetails.bankName) {
                         const reply = `You have now used your 1 free receipt.\n\n` +
                                       `To get lifetime access for *₦${LIFETIME_FEE.toLocaleString()}*, please transfer to this account:\n\n` +
-                                      `*Bank:* ${accountDetails.bank_name}\n` +
-                                      `*Account Number:* ${accountDetails.account_number}\n\n` +
+                                      `*Bank:* ${accountDetails.bankName}\n` +
+                                      `*Account Number:* ${accountDetails.accountNumber}\n\n` +
                                       `Your access will be unlocked automatically after payment.`;
                         await sendMessageWithDelay(msg, reply);
                     }
@@ -290,7 +298,7 @@ client.on('message', async msg => {
 
 // --- Main Function ---
 async function startBot() {
-    if (!MONGO_URI || !IMGBB_API_KEY || !RECEIPT_BASE_URL || !PP_API_KEY || !PP_SECRET_KEY) {
+    if (!MONGO_URI || !IMGBB_API_KEY || !RECEIPT_BASE_URL || !PP_API_KEY || !PP_SECRET_KEY || !PP_BUSINESS_ID) {
         console.error("FATAL ERROR: Missing required environment variables.");
         process.exit(1);
     }
