@@ -11,10 +11,10 @@ const IMGBB_API_KEY = process.env.IMGBB_API_KEY;
 const RECEIPT_BASE_URL = process.env.RECEIPT_BASE_URL;
 const PP_API_KEY = process.env.PP_API_KEY;
 const PP_SECRET_KEY = process.env.PP_SECRET_KEY;
-const PORT = 3000; // <<<--- THE FINAL FIX IS HERE
+const PORT = 3000;
 
 const DB_NAME = 'receiptBot';
-const ADMIN_NUMBERS = ['2348146817447@c.us', '2347016370067@c.us'];
+const ADMIN_NUMBERS = ['2348146817448@c.us', '2347016370067@c.us'];
 const LIFETIME_FEE = 5000;
 
 // --- Database, State, and Web Server ---
@@ -218,17 +218,17 @@ client.on('message', async msg => {
             case 'receipt_payment_method':
                 userSession.receiptData.paymentMethod = text;
                 const user = await db.collection('users').findOne({ userId: senderId });
-
                 const isAdmin = ADMIN_NUMBERS.includes(senderId);
+
+                // *** CORRECTED PAYWALL LOGIC ***
                 if (!isAdmin && !user.isPaid && user.receiptCount >= 1) {
-                    await sendMessageWithDelay(msg, "You've used your 1 free receipt. Generating a secure payment account for you now...");
+                    await sendMessageWithDelay(msg, "You have already used your free receipt. To continue, please pay for lifetime access.");
                     const accountDetails = await generateReservedAccount(user);
                     if (accountDetails && accountDetails.bank_name) {
-                        const reply = `To get lifetime access, please transfer *₦${LIFETIME_FEE.toLocaleString()}* to this account:\n\n` +
+                        const reply = `To get lifetime access for *₦${LIFETIME_FEE.toLocaleString()}*, please transfer to this account:\n\n` +
                                       `*Bank:* ${accountDetails.bank_name}\n` +
-                                      `*Account Number:* ${accountDetails.account_number}\n` +
-                                      `*Amount:* ₦${LIFETIME_FEE.toLocaleString()}\n\n` +
-                                      `Your access will be unlocked automatically the moment you pay.`;
+                                      `*Account Number:* ${accountDetails.account_number}\n\n` +
+                                      `Your access will be unlocked automatically after payment.`;
                         await msg.reply(reply);
                     } else {
                         await msg.reply("Sorry, I couldn't generate a payment account right now. Please try again later.");
@@ -240,14 +240,10 @@ client.on('message', async msg => {
                 await sendMessageWithDelay(msg, `✅ *Details collected!* Generating your high-class receipt, please wait...`);
                 
                 const urlParams = new URLSearchParams({
-                    bn: user.brandName, bc: user.brandColor,
-                    logo: user.logoUrl || '',
-                    cn: userSession.receiptData.customerName,
-                    items: userSession.receiptData.items.join('||'),
-                    prices: userSession.receiptData.prices.join(','),
-                    pm: userSession.receiptData.paymentMethod,
-                    addr: user.address || '', 
-                    ci: user.contactInfo || ''
+                    bn: user.brandName, bc: user.brandColor, logo: user.logoUrl || '',
+                    cn: userSession.receiptData.customerName, items: userSession.receiptData.items.join('||'),
+                    prices: userSession.receiptData.prices.join(','), pm: userSession.receiptData.paymentMethod,
+                    addr: user.address || '', ci: user.contactInfo || ''
                 });
                 
                 const fullUrl = `${RECEIPT_BASE_URL}template.${user.preferredTemplate}.html?${urlParams.toString()}`;
@@ -264,6 +260,16 @@ client.on('message', async msg => {
 
                 if (!isAdmin && !user.isPaid) {
                     await db.collection('users').updateOne({ userId: senderId }, { $inc: { receiptCount: 1 } });
+                    // Immediately send the payment prompt after the first receipt
+                    const accountDetails = await generateReservedAccount(user);
+                    if (accountDetails && accountDetails.bank_name) {
+                        const reply = `You have now used your 1 free receipt.\n\n` +
+                                      `To get lifetime access for *₦${LIFETIME_FEE.toLocaleString()}*, please transfer to this account:\n\n` +
+                                      `*Bank:* ${accountDetails.bank_name}\n` +
+                                      `*Account Number:* ${accountDetails.account_number}\n\n` +
+                                      `Your access will be unlocked automatically after payment.`;
+                        await sendMessageWithDelay(msg, reply);
+                    }
                 }
                 
                 userStates.delete(senderId);
@@ -288,11 +294,10 @@ async function startBot() {
         console.error("FATAL ERROR: Missing required environment variables.");
         process.exit(1);
     }
-    
     app.listen(PORT, () => console.log(`Webhook server listening on port ${PORT}`));
-
     await connectToDB();
     client.initialize();
 }
 
 startBot();
+
