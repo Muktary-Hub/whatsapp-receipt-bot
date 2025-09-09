@@ -8,10 +8,8 @@
   },
   "dependencies": {
     "whatsapp-web.js": "^1.23.0",
-    "mongodb": "^6.5.0"
-  },
-  "engines": {
-    "node": "18.x"
+    "mongodb": "^6.5.0",
+    "canvas": "^2.11.2"
   }
 }
 
