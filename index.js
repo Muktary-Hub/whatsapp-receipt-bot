@@ -12,6 +12,7 @@ const RECEIPT_BASE_URL = process.env.RECEIPT_BASE_URL;
 const PP_API_KEY = process.env.PP_API_KEY;
 const PP_SECRET_KEY = process.env.PP_SECRET_KEY;
 const PP_BUSINESS_ID = process.env.PP_BUSINESS_ID;
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD; // New secret password for the dashboard
 const PORT = 3000;
 
 const DB_NAME = 'receiptBot';
@@ -59,7 +60,6 @@ async function uploadLogo(media) {
 function formatPhoneNumberForApi(whatsappId) {
     let number = whatsappId.split('@')[0];
     number = number.replace(/\D/g, '');
-
     if (number.startsWith('234') && number.length === 13) {
         return '0' + number.substring(3);
     }
@@ -79,7 +79,6 @@ async function generateVirtualAccount(user) {
         console.error(`Could not format phone number for user: ${user.userId}`);
         return null;
     }
-
     const options = {
         method: 'POST',
         url: 'https://api.paymentpoint.co/api/v1/createVirtualAccount',
@@ -101,36 +100,29 @@ async function generateVirtualAccount(user) {
         if (response.data && response.data.bankAccounts && response.data.bankAccounts.length > 0) {
             return response.data.bankAccounts[0];
         }
-        console.error("PaymentPoint response missing bank account:", response.data);
         return null;
     } catch (error) {
         console.error("--- PAYMENTPOINT API ERROR ---");
-        if (error.response) {
-            console.error("Status:", error.response.status);
-            console.error("Data:", JSON.stringify(error.response.data, null, 2));
-        } else {
-            console.error('Error Message:', error.message);
-        }
+        if (error.response) { console.error("Data:", JSON.stringify(error.response.data, null, 2)); }
+        else { console.error('Error Message:', error.message); }
         console.error("--- END PAYMENTPOINT API ERROR ---");
         return null;
     }
 }
 
-// --- WEBHOOK SERVER ROUTES ---
+// --- WEB SERVER ROUTES ---
 app.get('/', (req, res) => res.status(200).send('SmartReceipt Bot Webhook Server is running.'));
 
 app.post('/webhook', async (req, res) => {
     try {
         console.log("Webhook received from PaymentPoint!");
         const data = req.body;
-        
         if (data && data.customer && data.customer.customer_phone_number) {
             let phone = data.customer.customer_phone_number;
             if (phone.startsWith('0') && phone.length === 11) {
                 phone = '234' + phone.substring(1);
             }
             const userId = `${phone}@c.us`;
-
             console.log(`Payment received for user: ${userId}`);
             const result = await db.collection('users').updateOne({ userId: userId }, { $set: { isPaid: true } });
             if (result.modifiedCount > 0) {
@@ -145,6 +137,28 @@ app.post('/webhook', async (req, res) => {
     }
 });
 
+app.post('/admin-data', async (req, res) => {
+    try {
+        const { password } = req.body;
+        if (password !== ADMIN_PASSWORD) {
+            return res.status(401).json({ error: 'Unauthorized: Incorrect password.' });
+        }
+        const usersCollection = db.collection('users');
+        const totalUsers = await usersCollection.countDocuments();
+        const paidUsers = await usersCollection.countDocuments({ isPaid: true });
+        const recentUsers = await usersCollection.find().sort({ createdAt: -1 }).limit(10).toArray();
+        const totalRevenue = paidUsers * LIFETIME_FEE;
+        res.status(200).json({
+            totalUsers,
+            paidUsers,
+            totalRevenue,
+            recentUsers
+        });
+    } catch (error) {
+        console.error("Error fetching admin data:", error);
+        res.status(500).json({ error: 'An internal server error occurred.' });
+    }
+});
 
 // --- WhatsApp Client Initialization ---
 const client = new Client({
@@ -168,26 +182,16 @@ client.on('message', async msg => {
         const user = await db.collection('users').findOne({ userId: senderId });
         const isAdmin = ADMIN_NUMBERS.includes(senderId);
 
-        // --- STATS COMMAND ---
         if (lowerCaseText === 'stats') {
             if (user && user.onboardingComplete) {
                 const now = new Date();
                 const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
                 const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
-
-                const receipts = await db.collection('receipts').find({
-                    userId: senderId,
-                    createdAt: { $gte: startOfMonth, $lte: endOfMonth }
-                }).toArray();
-
+                const receipts = await db.collection('receipts').find({ userId: senderId, createdAt: { $gte: startOfMonth, $lte: endOfMonth } }).toArray();
                 const totalSales = receipts.reduce((sum, receipt) => sum + receipt.totalAmount, 0);
                 const receiptCount = receipts.length;
                 const monthName = startOfMonth.toLocaleString('default', { month: 'long' });
-
-                let statsMessage = `📊 *Your Stats for ${monthName}*\n\n`;
-                statsMessage += `*Receipts Generated:* ${receiptCount}\n`;
-                statsMessage += `*Total Sales:* ₦${totalSales.toLocaleString()}`;
-                
+                let statsMessage = `📊 *Your Stats for ${monthName}*\n\n*Receipts Generated:* ${receiptCount}\n*Total Sales:* ₦${totalSales.toLocaleString()}`;
                 await sendMessageWithDelay(msg, statsMessage);
             } else {
                 await sendMessageWithDelay(msg, "You need to complete your setup first to view stats.");
@@ -195,15 +199,11 @@ client.on('message', async msg => {
             return;
         }
 
-        // --- PAYWALL BLOCKER ---
         if (lowerCaseText === 'new receipt' && user && !isAdmin && !user.isPaid && user.receiptCount >= 1) {
             await sendMessageWithDelay(msg, "You have exhausted your free limit. To continue, please pay for lifetime access.");
             const accountDetails = await generateVirtualAccount(user);
             if (accountDetails && accountDetails.bankName) {
-                const reply = `To get lifetime access for *₦${LIFETIME_FEE.toLocaleString()}*, please transfer to this account:\n\n` +
-                              `*Bank:* ${accountDetails.bankName}\n` +
-                              `*Account Number:* ${accountDetails.accountNumber}\n\n` +
-                              `Your access will be unlocked automatically after payment.`;
+                const reply = `To get lifetime access for *₦${LIFETIME_FEE.toLocaleString()}*, please transfer to this account:\n\n` + `*Bank:* ${accountDetails.bankName}\n` + `*Account Number:* ${accountDetails.accountNumber}\n\n` + `Your access will be unlocked automatically after payment.`;
                 await msg.reply(reply);
             } else {
                 await msg.reply("Sorry, I couldn't generate a payment account right now. Please try again later.");
@@ -233,7 +233,7 @@ client.on('message', async msg => {
         switch (currentState) {
             case 'awaiting_brand_name':
                 await db.collection('users').deleteMany({ userId: senderId });
-                await db.collection('users').insertOne({ userId: senderId, brandName: text, onboardingComplete: false, receiptCount: 0, isPaid: false });
+                await db.collection('users').insertOne({ userId: senderId, brandName: text, onboardingComplete: false, receiptCount: 0, isPaid: false, createdAt: new Date() });
                 userStates.set(senderId, { state: 'awaiting_brand_color' });
                 await sendMessageWithDelay(msg, `Great! Your brand is "${text}".\n\nWhat's your brand's main color? (e.g., #1D4ED8 or "blue")`);
                 break;
@@ -333,19 +333,13 @@ client.on('message', async msg => {
                     customerName: userSession.receiptData.customerName,
                     totalAmount: subtotal,
                     items: userSession.receiptData.items,
-                    prices: userSession.receiptData.prices,
-                    paymentMethod: userSession.receiptData.paymentMethod
                 });
 
                 if (!isAdmin && !user.isPaid) {
                     await db.collection('users').updateOne({ userId: senderId }, { $inc: { receiptCount: 1 } });
                     const accountDetails = await generateVirtualAccount(user);
                     if (accountDetails && accountDetails.bankName) {
-                        const reply = `You have now used your 1 free receipt.\n\n` +
-                                      `To get lifetime access for *₦${LIFETIME_FEE.toLocaleString()}*, please transfer to this account:\n\n` +
-                                      `*Bank:* ${accountDetails.bankName}\n` +
-                                      `*Account Number:* ${accountDetails.accountNumber}\n\n` +
-                                      `Your access will be unlocked automatically after payment.`;
+                        const reply = `You have now used your 1 free receipt.\n\n` + `To get lifetime access for *₦${LIFETIME_FEE.toLocaleString()}*, please transfer to this account:\n\n` + `*Bank:* ${accountDetails.bankName}\n` + `*Account Number:* ${accountDetails.accountNumber}\n\n` + `Your access will be unlocked automatically after payment.`;
                         await sendMessageWithDelay(msg, reply);
                     }
                 }
@@ -368,7 +362,7 @@ client.on('message', async msg => {
 
 // --- Main Function ---
 async function startBot() {
-    if (!MONGO_URI || !IMGBB_API_KEY || !RECEIPT_BASE_URL || !PP_API_KEY || !PP_SECRET_KEY || !PP_BUSINESS_ID) {
+    if (!MONGO_URI || !IMGBB_API_KEY || !RECEIPT_BASE_URL || !PP_API_KEY || !PP_SECRET_KEY || !PP_BUSINESS_ID || !ADMIN_PASSWORD) {
         console.error("FATAL ERROR: Missing required environment variables.");
         process.exit(1);
     }
