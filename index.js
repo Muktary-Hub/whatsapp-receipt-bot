@@ -15,7 +15,7 @@ const PP_BUSINESS_ID = process.env.PP_BUSINESS_ID;
 const PORT = 3000;
 
 const DB_NAME = 'receiptBot';
-const ADMIN_NUMBERS = ['2348146817447@c.us', '2347016370067@c.us'];
+const ADMIN_NUMBERS = ['2348146817448@c.us', '2347016370067@c.us'];
 const LIFETIME_FEE = 5000;
 
 // --- Database, State, and Web Server ---
@@ -56,27 +56,19 @@ async function uploadLogo(media) {
     }
 }
 
-// --- ✨ BULLETPROOF PHONE NUMBER FORMATTER ✨ ---
 function formatPhoneNumberForApi(whatsappId) {
-    let number = whatsappId.split('@')[0]; // e.g., '2347016370067'
-    number = number.replace(/\D/g, '');   // Remove any non-digit characters
+    let number = whatsappId.split('@')[0];
+    number = number.replace(/\D/g, '');
 
     if (number.startsWith('234') && number.length === 13) {
-        // Standard Nigerian number format from WhatsApp
-        return '0' + number.substring(3); // e.g., '07016370067'
+        return '0' + number.substring(3);
     }
-    
-    // Fallback for other potential formats, though less common
     if (number.length === 10 && !number.startsWith('0')) {
         return '0' + number;
     }
-
-    // If it's already a valid 11-digit number, return it
     if (number.length === 11 && number.startsWith('0')) {
         return number;
     }
-
-    // If we can't format it, return a value we know will fail, to help debugging.
     return "INVALID_PHONE_FORMAT"; 
 }
 
@@ -99,7 +91,7 @@ async function generateVirtualAccount(user) {
         data: {
             name: user.brandName.replace(/[^a-zA-Z0-9 ]/g, '').substring(0, 30),
             email: `${formattedPhone}@smartreceipt.user`,
-            phoneNumber: formattedPhone, // Use the new formatted number
+            phoneNumber: formattedPhone,
             bankCode: ['20946'],
             businessId: PP_BUSINESS_ID
         }
@@ -134,7 +126,6 @@ app.post('/webhook', async (req, res) => {
         
         if (data && data.customer && data.customer.customer_phone_number) {
             let phone = data.customer.customer_phone_number;
-            // Convert local format back to WhatsApp ID format
             if (phone.startsWith('0') && phone.length === 11) {
                 phone = '234' + phone.substring(1);
             }
@@ -177,6 +168,34 @@ client.on('message', async msg => {
         const user = await db.collection('users').findOne({ userId: senderId });
         const isAdmin = ADMIN_NUMBERS.includes(senderId);
 
+        // --- STATS COMMAND ---
+        if (lowerCaseText === 'stats') {
+            if (user && user.onboardingComplete) {
+                const now = new Date();
+                const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+                const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+
+                const receipts = await db.collection('receipts').find({
+                    userId: senderId,
+                    createdAt: { $gte: startOfMonth, $lte: endOfMonth }
+                }).toArray();
+
+                const totalSales = receipts.reduce((sum, receipt) => sum + receipt.totalAmount, 0);
+                const receiptCount = receipts.length;
+                const monthName = startOfMonth.toLocaleString('default', { month: 'long' });
+
+                let statsMessage = `📊 *Your Stats for ${monthName}*\n\n`;
+                statsMessage += `*Receipts Generated:* ${receiptCount}\n`;
+                statsMessage += `*Total Sales:* ₦${totalSales.toLocaleString()}`;
+                
+                await sendMessageWithDelay(msg, statsMessage);
+            } else {
+                await sendMessageWithDelay(msg, "You need to complete your setup first to view stats.");
+            }
+            return;
+        }
+
+        // --- PAYWALL BLOCKER ---
         if (lowerCaseText === 'new receipt' && user && !isAdmin && !user.isPaid && user.receiptCount >= 1) {
             await sendMessageWithDelay(msg, "You have exhausted your free limit. To continue, please pay for lifetime access.");
             const accountDetails = await generateVirtualAccount(user);
@@ -287,6 +306,8 @@ client.on('message', async msg => {
                 userSession.receiptData.paymentMethod = text;
                 await sendMessageWithDelay(msg, `✅ *Details collected!* Generating your high-class receipt, please wait...`);
                 
+                const subtotal = userSession.receiptData.prices.reduce((sum, price) => sum + parseFloat(price || 0), 0);
+
                 const urlParams = new URLSearchParams({
                     bn: user.brandName, bc: user.brandColor, logo: user.logoUrl || '',
                     cn: userSession.receiptData.customerName, items: userSession.receiptData.items.join('||'),
@@ -305,10 +326,19 @@ client.on('message', async msg => {
 
                 const media = new MessageMedia('image/png', screenshotBuffer.toString('base64'), 'SmartReceipt.png');
                 await client.sendMessage(senderId, media, { caption: `Here is the receipt for ${userSession.receiptData.customerName}.` });
+                
+                await db.collection('receipts').insertOne({
+                    userId: senderId,
+                    createdAt: new Date(),
+                    customerName: userSession.receiptData.customerName,
+                    totalAmount: subtotal,
+                    items: userSession.receiptData.items,
+                    prices: userSession.receiptData.prices,
+                    paymentMethod: userSession.receiptData.paymentMethod
+                });
 
                 if (!isAdmin && !user.isPaid) {
                     await db.collection('users').updateOne({ userId: senderId }, { $inc: { receiptCount: 1 } });
-                    // Immediately send the payment prompt
                     const accountDetails = await generateVirtualAccount(user);
                     if (accountDetails && accountDetails.bankName) {
                         const reply = `You have now used your 1 free receipt.\n\n` +
@@ -328,7 +358,7 @@ client.on('message', async msg => {
                     userStates.set(senderId, { state: 'awaiting_brand_name' });
                     await sendMessageWithDelay(msg, "👋 Welcome to SmartReceipt!\n\nTo get started, what is your business or brand name?");
                 } else {
-                    await sendMessageWithDelay(msg, `Welcome back, ${existingUser.brandName}!\n\nType *'new receipt'* to begin.`);
+                    await sendMessageWithDelay(msg, `Welcome back, ${existingUser.brandName}!\n\nType *'new receipt'* or *'stats'* to see your monthly summary.`);
                 }
         }
     } catch (err) {
@@ -348,3 +378,4 @@ async function startBot() {
 }
 
 startBot();
+
