@@ -4,6 +4,7 @@ const { MongoClient } = require('mongodb');
 const axios = require('axios');
 const FormData = require('form-data');
 const express = require('express');
+const cors = require('cors'); // ✨ IMPORT THE SECURITY TOOL
 
 // --- Configuration ---
 const MONGO_URI = process.env.MONGO_URI;
@@ -12,7 +13,7 @@ const RECEIPT_BASE_URL = process.env.RECEIPT_BASE_URL;
 const PP_API_KEY = process.env.PP_API_KEY;
 const PP_SECRET_KEY = process.env.PP_SECRET_KEY;
 const PP_BUSINESS_ID = process.env.PP_BUSINESS_ID;
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD; // New secret password for the dashboard
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const PORT = 3000;
 
 const DB_NAME = 'receiptBot';
@@ -24,6 +25,14 @@ let db;
 const userStates = new Map();
 const app = express();
 app.use(express.json());
+
+// --- ✨ CONFIGURE & ACTIVATE CORS SECURITY ✨ ---
+const corsOptions = {
+    // This is your "guest list". It allows your cPanel domain to make requests.
+    origin: ['http://smartnaijaservices.com.ng', 'https://smartnaijaservices.com.ng']
+};
+app.use(cors(corsOptions));
+
 
 // --- Database Connection ---
 async function connectToDB() {
