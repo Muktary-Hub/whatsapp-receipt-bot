@@ -104,6 +104,7 @@ app.post('/webhook', async (req, res) => {
     }
 });
 
+
 // --- WhatsApp Client Initialization ---
 const client = new Client({
     authStrategy: new LocalAuth({ dataPath: '/app/.wwebjs_auth' }),
@@ -292,6 +293,7 @@ async function startBot() {
     // START THE WEB SERVER IMMEDIATELY
     app.listen(PORT, () => console.log(`Webhook server listening on port ${process.env.PORT || 3000}`));
 
+    // THEN, connect to the database and start the slow WhatsApp bot
     await connectToDB();
     client.initialize();
 }
