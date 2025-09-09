@@ -11,10 +11,10 @@ const IMGBB_API_KEY = process.env.IMGBB_API_KEY;
 const RECEIPT_BASE_URL = process.env.RECEIPT_BASE_URL;
 const PP_API_KEY = process.env.PP_API_KEY;
 const PP_SECRET_KEY = process.env.PP_SECRET_KEY;
-const PORT = process.env.PORT || 3000;
+const PORT = 3000; // <<<--- THE FINAL FIX IS HERE
 
 const DB_NAME = 'receiptBot';
-const ADMIN_NUMBERS = ['2348146817448@c.us', '2347016370067@c.us'];
+const ADMIN_NUMBERS = ['2348146817447@c.us', '2347016370067@c.us'];
 const LIFETIME_FEE = 5000;
 
 // --- Database, State, and Web Server ---
@@ -103,7 +103,6 @@ app.post('/webhook', async (req, res) => {
         res.status(500).send('Error processing webhook');
     }
 });
-
 
 // --- WhatsApp Client Initialization ---
 const client = new Client({
@@ -290,13 +289,10 @@ async function startBot() {
         process.exit(1);
     }
     
-    // START THE WEB SERVER IMMEDIATELY
-    app.listen(PORT, () => console.log(`Webhook server listening on port ${process.env.PORT || 3000}`));
+    app.listen(PORT, () => console.log(`Webhook server listening on port ${PORT}`));
 
-    // THEN, connect to the database and start the slow WhatsApp bot
     await connectToDB();
     client.initialize();
 }
 
 startBot();
-
