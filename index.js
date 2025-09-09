@@ -5,13 +5,11 @@ const axios = require('axios');
 const FormData = require('form-data');
 
 // --- Configuration ---
-// These MUST be set in Railway's "Variables" tab for security
 const MONGO_URI = process.env.MONGO_URI;
 const IMGBB_API_KEY = process.env.IMGBB_API_KEY; 
-const RECEIPT_BASE_URL = process.env.RECEIPT_BASE_URL; // e.g., 'http://smartnaijaservices.com.ng/'
+const RECEIPT_BASE_URL = process.env.RECEIPT_BASE_URL;
 
 const DB_NAME = 'receiptBot';
-// Admin numbers with unlimited access
 const ADMIN_NUMBERS = ['2348146817448@c.us', '2347016370067@c.us']; 
 
 // --- Database Connection & State Management ---
@@ -106,7 +104,7 @@ client.on('message', async msg => {
                 await sendMessageWithDelay(msg, `Great! Your brand is "${text}".\n\nWhat is your brand's main color? (e.g., #1D4ED8 or "blue")`);
                 break;
             case 'awaiting_brand_color':
-                 await db.collection('users').updateOne({ userId: senderId }, { $set: { brandColor: text } });
+                await db.collection('users').updateOne({ userId: senderId }, { $set: { brandColor: text } });
                 userStates.set(senderId, { state: 'awaiting_logo' });
                 await sendMessageWithDelay(msg, `Color saved!\n\nNow, please upload your business logo. If you don't have one, just type *'skip'*.`);
                 break;
@@ -125,7 +123,19 @@ client.on('message', async msg => {
                     await sendMessageWithDelay(msg, "That's not an image. Please upload a logo file or type 'skip'.");
                     return;
                 }
-                await db.collection('users').updateOne({ userId: senderId }, { $set: { onboardingComplete: true } });
+                // *** RESTORED THIS STEP ***
+                userStates.set(senderId, { state: 'awaiting_address' });
+                await sendMessageWithDelay(msg, `Logo step complete.\n\nNext, what is your business address? This will appear on your receipts.`);
+                break;
+            // *** NEWLY ADDED CASE ***
+            case 'awaiting_address':
+                await db.collection('users').updateOne({ userId: senderId }, { $set: { address: text } });
+                userStates.set(senderId, { state: 'awaiting_contact_info' });
+                await sendMessageWithDelay(msg, `Address saved.\n\nFinally, what contact info should be on the receipt? (e.g., a phone number or email)`);
+                break;
+            // *** NEWLY ADDED CASE ***
+            case 'awaiting_contact_info':
+                await db.collection('users').updateOne({ userId: senderId }, { $set: { contactInfo: text, onboardingComplete: true } });
                 userStates.delete(senderId);
                 await sendMessageWithDelay(msg, `✅ *Setup Complete!* Your brand profile is all set.\n\nTo create your first receipt, just type:\n*'new receipt'*`);
                 break;
@@ -167,40 +177,35 @@ client.on('message', async msg => {
                 userSession.receiptData.paymentMethod = text;
                 const user = await db.collection('users').findOne({ userId: senderId });
 
-                // BUSINESS LOGIC: Check limits
                 const isAdmin = ADMIN_NUMBERS.includes(senderId);
                 if (!isAdmin && !user.isPaid && user.receiptCount >= 1) {
                     await sendMessageWithDelay(msg, "You've used your 1 free receipt. Please make a payment to continue generating unlimited receipts.");
-                    // We will add the payment link logic here in the next phase
                     userStates.delete(senderId);
                     return;
                 }
 
-                await sendMessageWithDelay(msg, `✅ *Details collected!* Generating your high-class receipt, please wait a moment...`);
+                await sendMessageWithDelay(msg, `✅ *Details collected!* Generating your high-class receipt, please wait...`);
                 
-                // Construct the dynamic URL
                 const urlParams = new URLSearchParams({
-                    bn: user.brandName,
-                    bc: user.brandColor,
-                    logo: user.logoUrl || 'null',
+                    bn: user.brandName, bc: user.brandColor,
+                    logo: user.logoUrl || '',
                     cn: userSession.receiptData.customerName,
-                    items: userSession.receiptData.items.join('||'), // Special separator
+                    items: userSession.receiptData.items.join('||'),
                     prices: userSession.receiptData.prices.join(','),
                     pm: userSession.receiptData.paymentMethod,
-                    ci: user.contactInfo || '' // Pass other info as needed
+                    addr: user.address || '', 
+                    ci: user.contactInfo || ''
                 });
                 
                 const fullUrl = `${RECEIPT_BASE_URL}template.${user.preferredTemplate}.html?${urlParams.toString()}`;
                 console.log(`Generating receipt from URL: ${fullUrl}`);
 
-                // Use Puppeteer to take a screenshot
                 const page = await client.pupBrowser.newPage();
-                await page.setViewport({ width: 800, height: 800, deviceScaleFactor: 2 }); // High-res
+                await page.setViewport({ width: 800, height: 800, deviceScaleFactor: 2 });
                 await page.goto(fullUrl, { waitUntil: 'networkidle0' });
                 const screenshotBuffer = await page.screenshot({ fullPage: true, type: 'png' });
                 await page.close();
 
-                // Send the image
                 const media = new MessageMedia('image/png', screenshotBuffer.toString('base64'), 'SmartReceipt.png');
                 await client.sendMessage(senderId, media, { caption: `Here is the receipt for ${userSession.receiptData.customerName}.` });
 
@@ -224,11 +229,10 @@ client.on('message', async msg => {
     }
 });
 
-
 // --- Main Function ---
 async function startBot() {
     if (!MONGO_URI || !IMGBB_API_KEY || !RECEIPT_BASE_URL) {
-        console.error("FATAL ERROR: Missing required environment variables. Please set MONGO_URI, IMGBB_API_KEY, and RECEIPT_BASE_URL in Railway.");
+        console.error("FATAL ERROR: Missing required environment variables.");
         process.exit(1);
     }
     await connectToDB();
@@ -236,5 +240,4 @@ async function startBot() {
 }
 
 startBot();
-
 
