@@ -4,7 +4,7 @@ const { MongoClient } = require('mongodb');
 const axios = require('axios');
 const FormData = require('form-data');
 const express = require('express');
-const cors = require('cors'); // ✨ IMPORT THE SECURITY TOOL
+const cors = require('cors');
 
 // --- Configuration ---
 const MONGO_URI = process.env.MONGO_URI;
@@ -25,12 +25,7 @@ let db;
 const userStates = new Map();
 const app = express();
 app.use(express.json());
-
-// --- ✨ CONFIGURE & ACTIVATE CORS SECURITY ✨ ---
-const corsOptions = {
-    // This is your "guest list". It allows your cPanel domain to make requests.
-    origin: ['http://smartnaijaservices.com.ng', 'https://smartnaijaservices.com.ng']
-};
+const corsOptions = { origin: ['http://smartnaijaservices.com.ng', 'https://smartnaijaservices.com.ng'] };
 app.use(cors(corsOptions));
 
 
@@ -190,7 +185,43 @@ client.on('message', async msg => {
         
         const user = await db.collection('users').findOne({ userId: senderId });
         const isAdmin = ADMIN_NUMBERS.includes(senderId);
+        const userSession = userStates.get(senderId) || {};
+        const currentState = userSession.state;
 
+        // --- HISTORY RESEND LOGIC ---
+        if (currentState === 'awaiting_history_choice') {
+            const choice = parseInt(text, 10);
+            if (choice >= 1 && choice <= userSession.history.length) {
+                const selectedReceipt = userSession.history[choice - 1];
+
+                await sendMessageWithDelay(msg, `Resending receipt for *${selectedReceipt.customerName}*...`);
+
+                const urlParams = new URLSearchParams({
+                    bn: user.brandName, bc: user.brandColor, logo: user.logoUrl || '',
+                    cn: selectedReceipt.customerName, items: selectedReceipt.items.join('||'),
+                    prices: selectedReceipt.prices.join(','), pm: selectedReceipt.paymentMethod,
+                    addr: user.address || '', ci: user.contactInfo || ''
+                });
+                
+                const fullUrl = `${RECEIPT_BASE_URL}template.${user.preferredTemplate}.html?${urlParams.toString()}`;
+                
+                const page = await client.pupBrowser.newPage();
+                await page.setViewport({ width: 800, height: 800, deviceScaleFactor: 2 });
+                await page.goto(fullUrl, { waitUntil: 'networkidle0' });
+                const screenshotBuffer = await page.screenshot({ fullPage: true, type: 'png' });
+                await page.close();
+
+                const media = new MessageMedia('image/png', screenshotBuffer.toString('base64'), 'SmartReceipt.png');
+                await client.sendMessage(senderId, media, { caption: `Here is the receipt for ${selectedReceipt.customerName}.` });
+                
+                userStates.delete(senderId);
+            } else {
+                await sendMessageWithDelay(msg, "Invalid number. Please reply with a number from the list (1-5).");
+            }
+            return;
+        }
+
+        // --- COMMAND HANDLING ---
         if (lowerCaseText === 'stats') {
             if (user && user.onboardingComplete) {
                 const now = new Date();
@@ -208,6 +239,26 @@ client.on('message', async msg => {
             return;
         }
 
+        if (lowerCaseText === 'history') {
+            if (user && user.onboardingComplete) {
+                const recentReceipts = await db.collection('receipts').find({ userId: senderId }).sort({ createdAt: -1 }).limit(5).toArray();
+                if (recentReceipts.length === 0) {
+                    await sendMessageWithDelay(msg, "You haven't generated any receipts yet.");
+                    return;
+                }
+                let historyMessage = "🧾 *Your 5 Most Recent Receipts:*\n\n";
+                recentReceipts.forEach((receipt, index) => {
+                    historyMessage += `*${index + 1}.* Receipt for *${receipt.customerName}* - ₦${receipt.totalAmount.toLocaleString()}\n`;
+                });
+                historyMessage += "\nTo resend a receipt, just reply with its number (1-5).";
+                userStates.set(senderId, { state: 'awaiting_history_choice', history: recentReceipts });
+                await sendMessageWithDelay(msg, historyMessage);
+            } else {
+                await sendMessageWithDelay(msg, "You need to complete your setup first to view your history.");
+            }
+            return;
+        }
+
         if (lowerCaseText === 'new receipt' && user && !isAdmin && !user.isPaid && user.receiptCount >= 1) {
             await sendMessageWithDelay(msg, "You have exhausted your free limit. To continue, please pay for lifetime access.");
             const accountDetails = await generateVirtualAccount(user);
@@ -219,9 +270,6 @@ client.on('message', async msg => {
             }
             return;
         }
-
-        const userSession = userStates.get(senderId) || {};
-        const currentState = userSession.state;
 
         if (['new receipt', 'changereceipt'].includes(lowerCaseText)) {
             if (user && user.onboardingComplete) {
@@ -342,6 +390,8 @@ client.on('message', async msg => {
                     customerName: userSession.receiptData.customerName,
                     totalAmount: subtotal,
                     items: userSession.receiptData.items,
+                    prices: userSession.receiptData.prices,
+                    paymentMethod: userSession.receiptData.paymentMethod
                 });
 
                 if (!isAdmin && !user.isPaid) {
