@@ -6,16 +6,14 @@ const FormData = require('form-data');
 const express = require('express');
 
 // --- Configuration ---
-// These MUST be set in Railway's "Variables" tab for security
 const MONGO_URI = process.env.MONGO_URI;
 const IMGBB_API_KEY = process.env.IMGBB_API_KEY; 
-const RECEIPT_BASE_URL = process.env.RECEIPT_BASE_URL; // e.g., 'http://smartnaijaservices.com.ng/'
-const PP_API_KEY = process.env.PP_API_KEY; // PaymentPoint API Key
-const PP_SECRET_KEY = process.env.PP_SECRET_KEY; // PaymentPoint Secret Key
-const PORT = process.env.PORT || 3000; // Port for webhook server
+const RECEIPT_BASE_URL = process.env.RECEIPT_BASE_URL;
+const PP_API_KEY = process.env.PP_API_KEY;
+const PP_SECRET_KEY = process.env.PP_SECRET_KEY;
+const PORT = process.env.PORT || 3000;
 
 const DB_NAME = 'receiptBot';
-// Admin numbers with unlimited access
 const ADMIN_NUMBERS = ['2348146817448@c.us', '2347016370067@c.us'];
 const LIFETIME_FEE = 5000;
 
@@ -23,7 +21,7 @@ const LIFETIME_FEE = 5000;
 let db;
 const userStates = new Map();
 const app = express();
-app.use(express.json()); // Middleware to parse webhook JSON
+app.use(express.json());
 
 // --- Database Connection ---
 async function connectToDB() {
@@ -49,11 +47,7 @@ async function uploadLogo(media) {
         const imageBuffer = Buffer.from(media.data, 'base64');
         const form = new FormData();
         form.append('image', imageBuffer, { filename: 'logo.png' });
-
-        const response = await axios.post(`https://api.imgbb.com/1/upload?key=${IMGBB_API_KEY}`, form, {
-            headers: form.getHeaders()
-        });
-        
+        const response = await axios.post(`https://api.imgbb.com/1/upload?key=${IMGBB_API_KEY}`, form, { headers: form.getHeaders() });
         return response.data.data.display_url;
     } catch (error) {
         console.error("ImgBB upload failed:", error.response ? error.response.data : error.message);
@@ -66,16 +60,12 @@ async function generateReservedAccount(user) {
     const options = {
         method: 'POST',
         url: 'https://api.paymentpoint.co/v1/bank/reserve_account',
-        headers: {
-            'Content-Type': 'application/json',
-            'api-key': PP_API_KEY,
-            'secret-key': PP_SECRET_KEY
-        },
+        headers: { 'Content-Type': 'application/json', 'api-key': PP_API_KEY, 'secret-key': PP_SECRET_KEY },
         data: {
             account_name: user.brandName.substring(0, 20),
             customer_email: `${user.userId.split('@')[0]}@smartreceipt.user`,
             customer_phone: user.userId.split('@')[0],
-            notification_url: `${process.env.RAILWAY_STATIC_URL}/webhook`, // Use Railway's public URL
+            notification_url: `https://${process.env.RAILWAY_STATIC_URL}/webhook`,
             amount: LIFETIME_FEE
         }
     };
@@ -88,7 +78,14 @@ async function generateReservedAccount(user) {
     }
 }
 
-// --- WEBHOOK LISTENER ---
+// --- WEBHOOK SERVER ROUTES ---
+
+// ✨ NEW HEALTH CHECK ROUTE (The "Welcome Mat") ✨
+app.get('/', (req, res) => {
+    res.status(200).send('SmartReceipt Bot Webhook Server is running.');
+});
+
+// WEBHOOK LISTENER (The "Back Door")
 app.post('/webhook', async (req, res) => {
     try {
         console.log("Webhook received from PaymentPoint!");
@@ -97,12 +94,7 @@ app.post('/webhook', async (req, res) => {
         if (data && data.customer_phone) {
             const userId = `${data.customer_phone}@c.us`;
             console.log(`Payment received for user: ${userId}`);
-
-            const result = await db.collection('users').updateOne(
-                { userId: userId },
-                { $set: { isPaid: true } }
-            );
-
+            const result = await db.collection('users').updateOne({ userId: userId }, { $set: { isPaid: true } });
             if (result.modifiedCount > 0) {
                 console.log(`User ${userId} unlocked successfully.`);
                 await client.sendMessage(userId, `✅ *Payment Confirmed!* Thank you.\n\nYour SmartReceipt account now has lifetime access to unlimited receipts.`);
@@ -115,13 +107,11 @@ app.post('/webhook', async (req, res) => {
     }
 });
 
+
 // --- WhatsApp Client Initialization ---
 const client = new Client({
     authStrategy: new LocalAuth({ dataPath: '/app/.wwebjs_auth' }),
-    puppeteer: {
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu'],
-    }
+    puppeteer: { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu'] }
 });
 
 client.on('qr', qr => console.log(qr));
