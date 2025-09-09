@@ -11,11 +11,11 @@ const IMGBB_API_KEY = process.env.IMGBB_API_KEY;
 const RECEIPT_BASE_URL = process.env.RECEIPT_BASE_URL;
 const PP_API_KEY = process.env.PP_API_KEY;
 const PP_SECRET_KEY = process.env.PP_SECRET_KEY;
-const PP_BUSINESS_ID = process.env.PP_BUSINESS_ID; // Your Business ID
+const PP_BUSINESS_ID = process.env.PP_BUSINESS_ID;
 const PORT = 3000;
 
 const DB_NAME = 'receiptBot';
-const ADMIN_NUMBERS = ['2348146817449@c.us', '2347016370067@c.us'];
+const ADMIN_NUMBERS = ['2348146817448@c.us', '2347016370067@c.us'];
 const LIFETIME_FEE = 5000;
 
 // --- Database, State, and Web Server ---
@@ -56,8 +56,19 @@ async function uploadLogo(media) {
     }
 }
 
-// --- ✨ CORRECTED PAYMENTPOINT INTEGRATION ✨ ---
+// --- ✨ NEW PHONE NUMBER FORMATTER ✨ ---
+function formatPhoneNumber(whatsappId) {
+    let number = whatsappId.split('@')[0];
+    if (number.startsWith('234')) {
+        return '0' + number.substring(3);
+    }
+    return number;
+}
+
+
+// --- PAYMENTPOINT INTEGRATION ---
 async function generateVirtualAccount(user) {
+    const formattedPhone = formatPhoneNumber(user.userId);
     const options = {
         method: 'POST',
         url: 'https://api.paymentpoint.co/api/v1/createVirtualAccount',
@@ -67,10 +78,10 @@ async function generateVirtualAccount(user) {
             'Authorization': `Bearer ${PP_SECRET_KEY}`
         },
         data: {
-            name: user.brandName.substring(0, 30),
-            email: `${user.userId.split('@')[0]}@smartreceipt.user`,
-            phoneNumber: user.userId.split('@')[0],
-            bankCode: ['20946'], // Palmpay Bank Code
+            name: user.brandName.replace(/[^a-zA-Z0-9 ]/g, '').substring(0, 30),
+            email: `${formattedPhone}@smartreceipt.user`,
+            phoneNumber: formattedPhone, // Use the new formatted number
+            bankCode: ['20946'],
             businessId: PP_BUSINESS_ID
         }
     };
@@ -79,26 +90,36 @@ async function generateVirtualAccount(user) {
         if (response.data && response.data.bankAccounts && response.data.bankAccounts.length > 0) {
             return response.data.bankAccounts[0];
         }
+        console.error("PaymentPoint response missing bank account:", response.data);
         return null;
     } catch (error) {
-        console.error("PaymentPoint Error:", error.response ? error.response.data : error.message);
+        console.error("--- PAYMENTPOINT API ERROR ---");
+        if (error.response) {
+            console.error("Status:", error.response.status);
+            console.error("Data:", JSON.stringify(error.response.data, null, 2));
+        } else {
+            console.error('Error Message:', error.message);
+        }
+        console.error("--- END PAYMENTPOINT API ERROR ---");
         return null;
     }
 }
 
-
 // --- WEBHOOK SERVER ROUTES ---
-app.get('/', (req, res) => {
-    res.status(200).send('SmartReceipt Bot Webhook Server is running.');
-});
-
+app.get('/', (req, res) => res.status(200).send('SmartReceipt Bot Webhook Server is running.'));
 app.post('/webhook', async (req, res) => {
     try {
         console.log("Webhook received from PaymentPoint!");
         const data = req.body;
-        
-        if (data && data.customer_phone) {
-            const userId = `${data.customer_phone}@c.us`;
+        // The webhook will likely send the local phone number format
+        if (data && data.customer && data.customer.customer_phone_number) {
+            let phone = data.customer.customer_phone_number;
+            // Convert it back to WhatsApp's format to find the user in our DB
+            if (phone.startsWith('0')) {
+                phone = '234' + phone.substring(1);
+            }
+            const userId = `${phone}@c.us`;
+
             console.log(`Payment received for user: ${userId}`);
             const result = await db.collection('users').updateOne({ userId: userId }, { $set: { isPaid: true } });
             if (result.modifiedCount > 0) {
