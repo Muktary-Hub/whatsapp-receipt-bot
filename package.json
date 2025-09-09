@@ -9,8 +9,9 @@
   "dependencies": {
     "whatsapp-web.js": "^1.23.0",
     "mongodb": "^6.5.0",
-    "canvas": "^2.11.2"
+    "canvas": "^2.11.2",
+    "axios": "^1.6.8",
+    "form-data": "^4.0.0"
   }
 }
-
 
