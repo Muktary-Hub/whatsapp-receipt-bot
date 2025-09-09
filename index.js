@@ -79,13 +79,10 @@ async function generateReservedAccount(user) {
 }
 
 // --- WEBHOOK SERVER ROUTES ---
-
-// ✨ NEW HEALTH CHECK ROUTE (The "Welcome Mat") ✨
 app.get('/', (req, res) => {
     res.status(200).send('SmartReceipt Bot Webhook Server is running.');
 });
 
-// WEBHOOK LISTENER (The "Back Door")
 app.post('/webhook', async (req, res) => {
     try {
         console.log("Webhook received from PaymentPoint!");
@@ -106,7 +103,6 @@ app.post('/webhook', async (req, res) => {
         res.status(500).send('Error processing webhook');
     }
 });
-
 
 // --- WhatsApp Client Initialization ---
 const client = new Client({
@@ -292,9 +288,12 @@ async function startBot() {
         console.error("FATAL ERROR: Missing required environment variables.");
         process.exit(1);
     }
+    
+    // START THE WEB SERVER IMMEDIATELY
+    app.listen(PORT, () => console.log(`Webhook server listening on port ${process.env.PORT || 3000}`));
+
     await connectToDB();
     client.initialize();
-    app.listen(PORT, () => console.log(`Webhook server listening on port ${PORT}`));
 }
 
 startBot();
