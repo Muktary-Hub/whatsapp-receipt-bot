@@ -3,19 +3,29 @@ const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const { MongoClient } = require('mongodb');
 const axios = require('axios');
 const FormData = require('form-data');
+const express = require('express');
 
 // --- Configuration ---
+// These MUST be set in Railway's "Variables" tab for security
 const MONGO_URI = process.env.MONGO_URI;
 const IMGBB_API_KEY = process.env.IMGBB_API_KEY; 
-const RECEIPT_BASE_URL = process.env.RECEIPT_BASE_URL;
+const RECEIPT_BASE_URL = process.env.RECEIPT_BASE_URL; // e.g., 'http://smartnaijaservices.com.ng/'
+const PP_API_KEY = process.env.PP_API_KEY; // PaymentPoint API Key
+const PP_SECRET_KEY = process.env.PP_SECRET_KEY; // PaymentPoint Secret Key
+const PORT = process.env.PORT || 3000; // Port for webhook server
 
 const DB_NAME = 'receiptBot';
-const ADMIN_NUMBERS = ['2348146817448@c.us', '2347016370067@c.us']; 
+// Admin numbers with unlimited access
+const ADMIN_NUMBERS = ['2348146817448@c.us', '2347016370067@c.us'];
+const LIFETIME_FEE = 5000;
 
-// --- Database Connection & State Management ---
+// --- Database, State, and Web Server ---
 let db;
 const userStates = new Map();
+const app = express();
+app.use(express.json()); // Middleware to parse webhook JSON
 
+// --- Database Connection ---
 async function connectToDB() {
     try {
         const client = new MongoClient(MONGO_URI);
@@ -51,6 +61,60 @@ async function uploadLogo(media) {
     }
 }
 
+// --- PAYMENTPOINT INTEGRATION ---
+async function generateReservedAccount(user) {
+    const options = {
+        method: 'POST',
+        url: 'https://api.paymentpoint.co/v1/bank/reserve_account',
+        headers: {
+            'Content-Type': 'application/json',
+            'api-key': PP_API_KEY,
+            'secret-key': PP_SECRET_KEY
+        },
+        data: {
+            account_name: user.brandName.substring(0, 20),
+            customer_email: `${user.userId.split('@')[0]}@smartreceipt.user`,
+            customer_phone: user.userId.split('@')[0],
+            notification_url: `${process.env.RAILWAY_STATIC_URL}/webhook`, // Use Railway's public URL
+            amount: LIFETIME_FEE
+        }
+    };
+    try {
+        const response = await axios.request(options);
+        return response.data;
+    } catch (error) {
+        console.error("PaymentPoint Error:", error.response ? error.response.data : error.message);
+        return null;
+    }
+}
+
+// --- WEBHOOK LISTENER ---
+app.post('/webhook', async (req, res) => {
+    try {
+        console.log("Webhook received from PaymentPoint!");
+        const data = req.body;
+        
+        if (data && data.customer_phone) {
+            const userId = `${data.customer_phone}@c.us`;
+            console.log(`Payment received for user: ${userId}`);
+
+            const result = await db.collection('users').updateOne(
+                { userId: userId },
+                { $set: { isPaid: true } }
+            );
+
+            if (result.modifiedCount > 0) {
+                console.log(`User ${userId} unlocked successfully.`);
+                await client.sendMessage(userId, `✅ *Payment Confirmed!* Thank you.\n\nYour SmartReceipt account now has lifetime access to unlimited receipts.`);
+            }
+        }
+        res.status(200).send('Webhook processed');
+    } catch (error) {
+        console.error("Error processing webhook:", error);
+        res.status(500).send('Error processing webhook');
+    }
+});
+
 // --- WhatsApp Client Initialization ---
 const client = new Client({
     authStrategy: new LocalAuth({ dataPath: '/app/.wwebjs_auth' }),
@@ -76,7 +140,6 @@ client.on('message', async msg => {
         const userSession = userStates.get(senderId) || {};
         const currentState = userSession.state;
 
-        // --- Command Handling ---
         if (['new receipt', 'changereceipt'].includes(lowerCaseText)) {
             const user = await db.collection('users').findOne({ userId: senderId });
             if (user && user.onboardingComplete) {
@@ -94,14 +157,12 @@ client.on('message', async msg => {
             return;
         }
 
-        // --- State-Based Conversation Logic ---
         switch (currentState) {
-            // ONBOARDING
             case 'awaiting_brand_name':
                 await db.collection('users').deleteMany({ userId: senderId });
                 await db.collection('users').insertOne({ userId: senderId, brandName: text, onboardingComplete: false, receiptCount: 0, isPaid: false });
                 userStates.set(senderId, { state: 'awaiting_brand_color' });
-                await sendMessageWithDelay(msg, `Great! Your brand is "${text}".\n\nWhat is your brand's main color? (e.g., #1D4ED8 or "blue")`);
+                await sendMessageWithDelay(msg, `Great! Your brand is "${text}".\n\nWhat's your brand's main color? (e.g., #1D4ED8 or "blue")`);
                 break;
             case 'awaiting_brand_color':
                 await db.collection('users').updateOne({ userId: senderId }, { $set: { brandColor: text } });
@@ -123,24 +184,19 @@ client.on('message', async msg => {
                     await sendMessageWithDelay(msg, "That's not an image. Please upload a logo file or type 'skip'.");
                     return;
                 }
-                // *** RESTORED THIS STEP ***
                 userStates.set(senderId, { state: 'awaiting_address' });
-                await sendMessageWithDelay(msg, `Logo step complete.\n\nNext, what is your business address? This will appear on your receipts.`);
+                await sendMessageWithDelay(msg, `Logo step complete.\n\nNext, what is your business address?`);
                 break;
-            // *** NEWLY ADDED CASE ***
             case 'awaiting_address':
                 await db.collection('users').updateOne({ userId: senderId }, { $set: { address: text } });
                 userStates.set(senderId, { state: 'awaiting_contact_info' });
                 await sendMessageWithDelay(msg, `Address saved.\n\nFinally, what contact info should be on the receipt? (e.g., a phone number or email)`);
                 break;
-            // *** NEWLY ADDED CASE ***
             case 'awaiting_contact_info':
                 await db.collection('users').updateOne({ userId: senderId }, { $set: { contactInfo: text, onboardingComplete: true } });
                 userStates.delete(senderId);
                 await sendMessageWithDelay(msg, `✅ *Setup Complete!* Your brand profile is all set.\n\nTo create your first receipt, just type:\n*'new receipt'*`);
                 break;
-
-            // RECEIPT
             case 'awaiting_template_choice':
                 const choice = parseInt(text, 10);
                 if (choice >= 1 && choice <= 6) {
@@ -179,7 +235,18 @@ client.on('message', async msg => {
 
                 const isAdmin = ADMIN_NUMBERS.includes(senderId);
                 if (!isAdmin && !user.isPaid && user.receiptCount >= 1) {
-                    await sendMessageWithDelay(msg, "You've used your 1 free receipt. Please make a payment to continue generating unlimited receipts.");
+                    await sendMessageWithDelay(msg, "You've used your 1 free receipt. Generating a secure payment account for you now...");
+                    const accountDetails = await generateReservedAccount(user);
+                    if (accountDetails && accountDetails.bank_name) {
+                        const reply = `To get lifetime access, please transfer *₦${LIFETIME_FEE.toLocaleString()}* to this account:\n\n` +
+                                      `*Bank:* ${accountDetails.bank_name}\n` +
+                                      `*Account Number:* ${accountDetails.account_number}\n` +
+                                      `*Amount:* ₦${LIFETIME_FEE.toLocaleString()}\n\n` +
+                                      `Your access will be unlocked automatically the moment you pay.`;
+                        await msg.reply(reply);
+                    } else {
+                        await msg.reply("Sorry, I couldn't generate a payment account right now. Please try again later.");
+                    }
                     userStates.delete(senderId);
                     return;
                 }
@@ -231,12 +298,13 @@ client.on('message', async msg => {
 
 // --- Main Function ---
 async function startBot() {
-    if (!MONGO_URI || !IMGBB_API_KEY || !RECEIPT_BASE_URL) {
+    if (!MONGO_URI || !IMGBB_API_KEY || !RECEIPT_BASE_URL || !PP_API_KEY || !PP_SECRET_KEY) {
         console.error("FATAL ERROR: Missing required environment variables.");
         process.exit(1);
     }
     await connectToDB();
     client.initialize();
+    app.listen(PORT, () => console.log(`Webhook server listening on port ${PORT}`));
 }
 
 startBot();
