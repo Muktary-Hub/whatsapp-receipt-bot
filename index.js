@@ -15,7 +15,7 @@ const PP_BUSINESS_ID = process.env.PP_BUSINESS_ID;
 const PORT = 3000;
 
 const DB_NAME = 'receiptBot';
-const ADMIN_NUMBERS = ['2348146817449@c.us', '2347016370067@c.us'];
+const ADMIN_NUMBERS = ['2348146817447@c.us', '2347016370067@c.us'];
 const LIFETIME_FEE = 5000;
 
 // --- Database, State, and Web Server ---
@@ -56,19 +56,38 @@ async function uploadLogo(media) {
     }
 }
 
-// --- ✨ NEW PHONE NUMBER FORMATTER ✨ ---
-function formatPhoneNumber(whatsappId) {
-    let number = whatsappId.split('@')[0];
-    if (number.startsWith('234')) {
-        return '0' + number.substring(3);
-    }
-    return number;
-}
+// --- ✨ BULLETPROOF PHONE NUMBER FORMATTER ✨ ---
+function formatPhoneNumberForApi(whatsappId) {
+    let number = whatsappId.split('@')[0]; // e.g., '2347016370067'
+    number = number.replace(/\D/g, '');   // Remove any non-digit characters
 
+    if (number.startsWith('234') && number.length === 13) {
+        // Standard Nigerian number format from WhatsApp
+        return '0' + number.substring(3); // e.g., '07016370067'
+    }
+    
+    // Fallback for other potential formats, though less common
+    if (number.length === 10 && !number.startsWith('0')) {
+        return '0' + number;
+    }
+
+    // If it's already a valid 11-digit number, return it
+    if (number.length === 11 && number.startsWith('0')) {
+        return number;
+    }
+
+    // If we can't format it, return a value we know will fail, to help debugging.
+    return "INVALID_PHONE_FORMAT"; 
+}
 
 // --- PAYMENTPOINT INTEGRATION ---
 async function generateVirtualAccount(user) {
-    const formattedPhone = formatPhoneNumber(user.userId);
+    const formattedPhone = formatPhoneNumberForApi(user.userId);
+    if (formattedPhone === "INVALID_PHONE_FORMAT") {
+        console.error(`Could not format phone number for user: ${user.userId}`);
+        return null;
+    }
+
     const options = {
         method: 'POST',
         url: 'https://api.paymentpoint.co/api/v1/createVirtualAccount',
@@ -107,15 +126,16 @@ async function generateVirtualAccount(user) {
 
 // --- WEBHOOK SERVER ROUTES ---
 app.get('/', (req, res) => res.status(200).send('SmartReceipt Bot Webhook Server is running.'));
+
 app.post('/webhook', async (req, res) => {
     try {
         console.log("Webhook received from PaymentPoint!");
         const data = req.body;
-        // The webhook will likely send the local phone number format
+        
         if (data && data.customer && data.customer.customer_phone_number) {
             let phone = data.customer.customer_phone_number;
-            // Convert it back to WhatsApp's format to find the user in our DB
-            if (phone.startsWith('0')) {
+            // Convert local format back to WhatsApp ID format
+            if (phone.startsWith('0') && phone.length === 11) {
                 phone = '234' + phone.substring(1);
             }
             const userId = `${phone}@c.us`;
@@ -157,7 +177,6 @@ client.on('message', async msg => {
         const user = await db.collection('users').findOne({ userId: senderId });
         const isAdmin = ADMIN_NUMBERS.includes(senderId);
 
-        // Block 'new receipt' if free limit is used
         if (lowerCaseText === 'new receipt' && user && !isAdmin && !user.isPaid && user.receiptCount >= 1) {
             await sendMessageWithDelay(msg, "You have exhausted your free limit. To continue, please pay for lifetime access.");
             const accountDetails = await generateVirtualAccount(user);
@@ -329,4 +348,3 @@ async function startBot() {
 }
 
 startBot();
-
