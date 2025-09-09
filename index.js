@@ -50,13 +50,11 @@ client.on('ready', () => {
 
 // --- Main Message Handling Logic ---
 client.on('message', async msg => {
-    // ----> THE PERFECT FILTER <----
     const chat = await msg.getChat();
     // Ignore messages from groups AND any message that is a status update.
     if (chat.isGroup || msg.isStatus) {
         return; 
     }
-    // ----> FILTER ENDS HERE <----
 
     const senderId = msg.from;
     const text = msg.body.trim();
@@ -71,6 +69,8 @@ client.on('message', async msg => {
     const currentState = userStates.get(senderId);
 
     // --- State-Based Conversation Logic ---
+
+    // 1. Handle user responding with their BRAND NAME
     if (currentState === 'awaiting_brand_name') {
         const brandName = text;
         console.log(`Received brand name "${brandName}" from ${senderId}`);
@@ -87,6 +87,7 @@ client.on('message', async msg => {
         return;
     }
 
+    // 2. Handle user responding with their BRAND COLOR
     if (currentState === 'awaiting_brand_color') {
         const brandColor = text;
         console.log(`Received brand color "${brandColor}" from ${senderId}`);
@@ -96,7 +97,37 @@ client.on('message', async msg => {
             { $set: { brandColor: brandColor } }
         );
 
-        await msg.reply(`Got it! Your brand color is ${brandColor}.\n\n*Onboarding complete!* You can now start creating receipts. (This feature is coming next).`);
+        await msg.reply(`Got it! Your brand color is ${brandColor}.\n\nNext, please provide your business address. This will appear on the receipt.`);
+        userStates.set(senderId, 'awaiting_address');
+        return;
+    }
+
+    // 3. Handle user responding with their ADDRESS
+    if (currentState === 'awaiting_address') {
+        const address = text;
+        console.log(`Received address "${address}" from ${senderId}`);
+
+        await db.collection('users').updateOne(
+            { userId: senderId },
+            { $set: { address: address } }
+        );
+
+        await msg.reply(`Address saved.\n\nFinally, what contact info should be on the receipt? (e.g., your phone number or email)`);
+        userStates.set(senderId, 'awaiting_contact_info');
+        return;
+    }
+
+    // 4. Handle user responding with their CONTACT INFO
+    if (currentState === 'awaiting_contact_info') {
+        const contactInfo = text;
+        console.log(`Received contact info "${contactInfo}" from ${senderId}`);
+
+        await db.collection('users').updateOne(
+            { userId: senderId },
+            { $set: { contactInfo: contactInfo, onboardingComplete: true } }
+        );
+
+        await msg.reply(`✅ *Setup Complete!* Your brand profile is all set.\n\nTo create your first receipt, just type the command:\n*'new receipt'*`);
         userStates.delete(senderId);
         return;
     }
@@ -106,12 +137,13 @@ client.on('message', async msg => {
 
     if (!existingUser) {
         console.log(`New user detected: ${senderId}. Starting onboarding.`);
-        await msg.reply("👋 Welcome to the Receipt Bot!\n\nLet's get your brand set up in about 30 seconds.");
+        // ----> NAME CHANGE IS HERE <----
+        await msg.reply("👋 Welcome to SmartReceipt!\n\nLet's get your brand set up in about 30 seconds.");
         await msg.reply("First, what is your business or brand name?");
         userStates.set(senderId, 'awaiting_brand_name');
     } else {
         console.log(`Existing user ${senderId} sent a message.`);
-        await msg.reply("Welcome back! Type *'new receipt'* to begin. (Feature coming soon!)");
+        await msg.reply(`Welcome back, ${existingUser.brandName}!\n\nType *'new receipt'* to begin.`);
     }
 });
 
