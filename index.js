@@ -15,7 +15,7 @@ const PP_BUSINESS_ID = process.env.PP_BUSINESS_ID;
 const PORT = 3000;
 
 const DB_NAME = 'receiptBot';
-const ADMIN_NUMBERS = ['2348146817448@c.us', '2347016370067@c.us'];
+const ADMIN_NUMBERS = ['2348146817449@c.us', '2347016370067@c.us'];
 const LIFETIME_FEE = 5000;
 
 // --- Database, State, and Web Server ---
