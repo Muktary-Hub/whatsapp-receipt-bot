@@ -224,6 +224,56 @@ client.on('message', async msg => {
             return;
         }
 
+        if (lowerCaseText === 'export') {
+            if (!user || !user.onboardingComplete) { await sendMessageWithDelay(msg, "Please complete your setup first."); return; }
+            await sendMessageWithDelay(msg, "Gathering your data for this month. Please wait a moment...");
+
+            const now = new Date();
+            const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+            const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+            const monthName = startOfMonth.toLocaleString('default', { month: 'long' });
+
+            const receipts = await db.collection('receipts').find({
+                userId: senderId,
+                createdAt: { $gte: startOfMonth, $lte: endOfMonth }
+            }).sort({ createdAt: 1 }).toArray();
+
+            if (receipts.length === 0) {
+                await sendMessageWithDelay(msg, "You have no receipts for this month to export.");
+                return;
+            }
+
+            let fileContent = `SmartReceipt - Sales Report for ${monthName} ${now.getFullYear()}\n`;
+            fileContent += `Brand: ${user.brandName}\n`;
+            fileContent += `Total Receipts: ${receipts.length}\n`;
+            fileContent += "----------------------------------------\n\n";
+
+            let totalSales = 0;
+            receipts.forEach(receipt => {
+                const date = receipt.createdAt.toLocaleDateString('en-NG');
+                fileContent += `Date: ${date}\n`;
+                fileContent += `Customer: ${receipt.customerName}\n`;
+                fileContent += `Items:\n`;
+                receipt.items.forEach((item, index) => {
+                    const price = parseFloat(receipt.prices[index] || 0);
+                    fileContent += `  - ${item}: ₦${price.toLocaleString()}\n`;
+                });
+                fileContent += `Total: ₦${receipt.totalAmount.toLocaleString()}\n`;
+                fileContent += `Payment Method: ${receipt.paymentMethod}\n`;
+                fileContent += "--------------------\n";
+                totalSales += receipt.totalAmount;
+            });
+            
+            fileContent += `\nGRAND TOTAL FOR ${monthName.toUpperCase()}: ₦${totalSales.toLocaleString()}`;
+
+            const buffer = Buffer.from(fileContent, 'utf-8');
+            const media = new MessageMedia('text/plain', buffer.toString('base64'), `SmartReceipt_Export_${monthName}.txt`);
+            
+            await client.sendMessage(senderId, media, { caption: `Here is your sales data for ${monthName}.` });
+            return;
+        }
+
+
         if (lowerCaseText === 'new receipt' && user && !isAdmin && !user.isPaid && user.receiptCount >= 1) {
             await sendMessageWithDelay(msg, "You have exhausted your free limit. To continue, please pay for lifetime access.");
             const accountDetails = await generateVirtualAccount(user);
@@ -274,7 +324,7 @@ client.on('message', async msg => {
             case 'editing_prices':
                 userSession.receiptToEdit.prices = text.split(',').map(p => p.trim());
                 if (userSession.receiptToEdit.items.length !== userSession.receiptToEdit.prices.length) {
-                    await sendMessageWithDelay(msg, "Items and prices don't match. Please try editing again by typing 'edit'.");
+                    await sendMessageWithDelay(msg, "The number of items and prices don't match. Please try editing again by typing 'edit'.");
                     userStates.delete(senderId);
                     return;
                 }
@@ -371,13 +421,12 @@ client.on('message', async msg => {
                 await sendMessageWithDelay(msg, `✅ *Details collected!* Generating your high-class receipt, please wait...`);
                 
                 const subtotal = userSession.receiptData.prices.reduce((sum, price) => sum + parseFloat(price || 0), 0);
-
+                
                 const newReceiptId = (await db.collection('receipts').insertOne({
                     userId: senderId, createdAt: new Date(), customerName: userSession.receiptData.customerName,
                     totalAmount: subtotal, items: userSession.receiptData.items,
                     prices: userSession.receiptData.prices, paymentMethod: userSession.receiptData.paymentMethod
                 })).insertedId;
-                
                 const newReceipt = await db.collection('receipts').findOne({_id: newReceiptId});
 
                 await regenerateAndSend(senderId, user, newReceipt, msg);
@@ -418,7 +467,8 @@ async function regenerateAndSend(senderId, user, receiptData, msg, isResend = fa
             { _id: new ObjectId(receiptData._id) },
             { $set: {
                 customerName: receiptData.customerName, items: receiptData.items,
-                prices: receiptData.prices, paymentMethod: receiptData.paymentMethod,
+                prices: receiptData.prices.map(p => p.toString()), // Ensure prices are strings
+                paymentMethod: receiptData.paymentMethod,
                 totalAmount: subtotal
             }}
         );
@@ -444,6 +494,7 @@ async function regenerateAndSend(senderId, user, receiptData, msg, isResend = fa
     
     userStates.delete(senderId);
 }
+
 
 // --- Main Function ---
 async function startBot() {
