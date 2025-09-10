@@ -186,23 +186,27 @@ client.on('message', async msg => {
         const isAdmin = ADMIN_NUMBERS.includes(senderId);
         const userSession = userStates.get(senderId) || {};
         const currentState = userSession.state;
-        
+
         // --- COMMAND HANDLING FIRST ---
-        if (lowerCaseText.startsWith('add product')) {
+        if (lowerCaseText === 'commands') {
+            const commandsList = `*Here's what I can do:*\n\n` +
+                `*new receipt* - Start creating a new receipt.\n` +
+                `*stats* - Get your sales summary for this month.\n` +
+                `*history* - View your last 5 receipts and resend them.\n` +
+                `*edit* - Make a correction to your last receipt.\n\n` +
+                `*products* - View your saved products.\n` +
+                `*add product* - Start adding new products to your catalog.\n` +
+                `*remove product "Name"* - Delete a product.\n\n` +
+                `*preference* - Choose your receipt format (PDF/Image).\n` +
+                `*changereceipt* - Change your default receipt template.`;
+            await sendMessageWithDelay(msg, commandsList);
+            return;
+        }
+
+        if (lowerCaseText === 'add product') {
             if (!user || !user.onboardingComplete) { await sendMessageWithDelay(msg, "Please complete your setup first."); return; }
-            const match = text.match(/(?:add product)\s+"([^"]+)"\s+(\d+(\.\d+)?)/i);
-            if (match) {
-                const productName = match[1];
-                const productPrice = parseFloat(match[2]);
-                await db.collection('products').updateOne(
-                    { userId: senderId, name: { $regex: new RegExp(`^${productName}$`, 'i') } },
-                    { $set: { price: productPrice, name: productName, userId: senderId } },
-                    { upsert: true }
-                );
-                await sendMessageWithDelay(msg, `✅ Product saved: *${productName}* - ₦${productPrice.toLocaleString()}`);
-            } else {
-                await sendMessageWithDelay(msg, 'Invalid format. Please use:\n`add product "Product Name" price`\n\n_Example: add product "Coca-Cola" 300_');
-            }
+            userStates.set(senderId, { state: 'adding_product_name' });
+            await sendMessageWithDelay(msg, "Let's add a new product. What is the product's name?");
             return;
         }
 
@@ -226,14 +230,20 @@ client.on('message', async msg => {
             if (!user || !user.onboardingComplete) { await sendMessageWithDelay(msg, "Please complete your setup first."); return; }
             const products = await db.collection('products').find({ userId: senderId }).sort({name: 1}).toArray();
             if(products.length === 0) {
-                await sendMessageWithDelay(msg, "You haven't added any products to your catalog yet. Use `add product \"Name\" price` to start.");
+                await sendMessageWithDelay(msg, "You haven't added any products to your catalog yet. Use `add product` to start.");
                 return;
             }
             let productList = "📦 *Your Product Catalog*\n\n";
-            products.forEach(p => {
-                productList += `*${p.name}* - ₦${p.price.toLocaleString()}\n`;
-            });
+            products.forEach(p => { productList += `*${p.name}* - ₦${p.price.toLocaleString()}\n`; });
             await sendMessageWithDelay(msg, productList);
+            return;
+        }
+
+        if (lowerCaseText === 'preference') {
+            if (!user || !user.onboardingComplete) { await sendMessageWithDelay(msg, "Please complete your setup first."); return; }
+            userStates.set(senderId, { state: 'awaiting_preference_choice' });
+            const preferenceMessage = `What format would you like your receipts in?\n\n*1.* Image (PNG) - _Good for sharing_\n*2.* Document (PDF) - _Best for printing & official records_`;
+            await sendMessageWithDelay(msg, preferenceMessage);
             return;
         }
 
@@ -272,7 +282,7 @@ client.on('message', async msg => {
             await sendMessageWithDelay(msg, editMessage);
             return;
         }
-        
+
         if (lowerCaseText === 'new receipt' && user && !isAdmin && !user.isPaid && user.receiptCount >= 1) {
             await sendMessageWithDelay(msg, "You have exhausted your free limit. To continue, please pay for lifetime access.");
             const accountDetails = await generateVirtualAccount(user);
@@ -333,7 +343,7 @@ client.on('message', async msg => {
                 userSession.receiptToEdit.paymentMethod = text;
                 await regenerateAndSend(senderId, user, userSession.receiptToEdit, msg);
                 break;
-
+            
             case 'awaiting_history_choice':
                 const historyChoice = parseInt(text, 10);
                 if (historyChoice >= 1 && historyChoice <= userSession.history.length) {
@@ -346,7 +356,7 @@ client.on('message', async msg => {
 
             case 'awaiting_brand_name':
                 await db.collection('users').deleteMany({ userId: senderId });
-                await db.collection('users').insertOne({ userId: senderId, brandName: text, onboardingComplete: false, receiptCount: 0, isPaid: false, createdAt: new Date() });
+                await db.collection('users').insertOne({ userId: senderId, brandName: text, onboardingComplete: false, receiptCount: 0, isPaid: false, createdAt: new Date(), receiptFormat: 'PNG' });
                 userStates.set(senderId, { state: 'awaiting_brand_color' });
                 await sendMessageWithDelay(msg, `Great! Your brand is "${text}".\n\nWhat's your brand's main color? (e.g., #1D4ED8 or "blue")`);
                 break;
@@ -383,6 +393,48 @@ client.on('message', async msg => {
                 userStates.delete(senderId);
                 await sendMessageWithDelay(msg, `✅ *Setup Complete!* Your brand profile is all set.\n\nTo create your first receipt, just type:\n*'new receipt'*`);
                 break;
+            
+            case 'adding_product_name':
+                if (lowerCaseText === 'done') {
+                    userStates.delete(senderId);
+                    await sendMessageWithDelay(msg, "Great! Your products have been saved to your catalog.");
+                    return;
+                }
+                userSession.newProductName = text;
+                userSession.state = 'adding_product_price';
+                userStates.set(senderId, userSession);
+                await sendMessageWithDelay(msg, `Got it. What's the price for *${text}*?`);
+                break;
+            case 'adding_product_price':
+                const price = parseFloat(text);
+                if (isNaN(price)) {
+                    await sendMessageWithDelay(msg, "That's not a valid price. Please send only a number.");
+                    return;
+                }
+                await db.collection('products').updateOne(
+                    { userId: senderId, name: { $regex: new RegExp(`^${userSession.newProductName}$`, 'i') } },
+                    { $set: { price: price, name: userSession.newProductName, userId: senderId } },
+                    { upsert: true }
+                );
+                await sendMessageWithDelay(msg, `✅ Saved: *${userSession.newProductName}* - ₦${price.toLocaleString()}.\n\nTo add another, send the next product's name. When you're done, just type *'done'*`);
+                userSession.state = 'adding_product_name';
+                userStates.set(senderId, userSession);
+                break;
+
+            case 'awaiting_preference_choice':
+                const formatChoice = text.trim();
+                let format = '';
+                if(formatChoice === '1') format = 'PNG';
+                else if (formatChoice === '2') format = 'PDF';
+                else {
+                    await sendMessageWithDelay(msg, "Invalid choice. Please reply with *1* for Image or *2* for Document.");
+                    return;
+                }
+                await db.collection('users').updateOne({ userId: senderId }, { $set: { receiptFormat: format } });
+                await sendMessageWithDelay(msg, `✅ Preference saved! Your receipts will now be generated as *${format}* files.`);
+                userStates.delete(senderId);
+                break;
+
             case 'awaiting_template_choice':
                 const templateChoice = parseInt(text, 10);
                 if (templateChoice >= 1 && templateChoice <= 6) {
@@ -397,7 +449,7 @@ client.on('message', async msg => {
                 userSession.receiptData.customerName = text;
                 userSession.state = 'receipt_items';
                 userStates.set(senderId, userSession);
-                await sendMessageWithDelay(msg, `Customer: ${text}\n\nWhat item(s) did they purchase? (e.g. Rice, Beans *OR* use your catalog: add "Coke" x2, add "Fanta" x1)`);
+                await sendMessageWithDelay(msg, `Customer: *${text}*\n\nNow, add items. You can either type them manually (e.g., _Rice, Beans_) or use your catalog (e.g., _Fanta x2, Coke x1_).`);
                 break;
             case 'receipt_items':
                 const items = [];
@@ -407,10 +459,10 @@ client.on('message', async msg => {
                 const parts = text.split(',');
                 for (const part of parts) {
                     const trimmedPart = part.trim();
-                    const quickAddMatch = /add "([^"]+)" x(\d+)/i.exec(trimmedPart);
+                    const quickAddMatch = /(.+)\s+x(\d+)/i.exec(trimmedPart);
 
                     if (quickAddMatch) {
-                        const productName = quickAddMatch[1];
+                        const productName = quickAddMatch[1].trim();
                         const quantity = parseInt(quickAddMatch[2], 10);
                         const product = await db.collection('products').findOne({ userId: senderId, name: { $regex: new RegExp(`^${productName}$`, 'i') } });
                         if (product) {
@@ -419,7 +471,8 @@ client.on('message', async msg => {
                                 prices.push(product.price);
                             }
                         } else {
-                            await sendMessageWithDelay(msg, `⚠️ Product not found: "*${productName}*". It will be ignored.`);
+                            await sendMessageWithDelay(msg, `⚠️ Product not in catalog: "*${productName}*". It will be treated as a manual item.`);
+                            manualItems.push(trimmedPart);
                         }
                     } else if (trimmedPart) {
                         manualItems.push(trimmedPart);
@@ -432,7 +485,7 @@ client.on('message', async msg => {
                     userSession.receiptData.quickAddPrices = prices;
                     userSession.state = 'receipt_manual_prices';
                     userStates.set(senderId, userSession);
-                    await sendMessageWithDelay(msg, `Quick-add items saved. Now, please enter the prices for your manual items:\n\n*${manualItems.join(', ')}*`);
+                    await sendMessageWithDelay(msg, `Catalog items added. Now, please enter the prices for your manual items:\n\n*${manualItems.join(', ')}*`);
                 } else {
                     userSession.receiptData.items = items;
                     userSession.receiptData.prices = prices.map(p => p.toString());
@@ -441,7 +494,6 @@ client.on('message', async msg => {
                     await sendMessageWithDelay(msg, `Items and prices added from your catalog.\n\nWhat was the payment method?`);
                 }
                 break;
-
             case 'receipt_manual_prices':
                 const manualPrices = text.split(',').map(p => p.trim());
                 if(manualPrices.length !== userSession.receiptData.manualItems.length) {
@@ -457,19 +509,14 @@ client.on('message', async msg => {
                 break;
             case 'receipt_payment_method':
                 userSession.receiptData.paymentMethod = text;
-                await sendMessageWithDelay(msg, `✅ *Details collected!* Generating your high-class receipt, please wait...`);
-                
-                const subtotal = userSession.receiptData.prices.reduce((sum, price) => sum + parseFloat(price || 0), 0);
-                
                 const newReceiptId = (await db.collection('receipts').insertOne({
                     userId: senderId, createdAt: new Date(), customerName: userSession.receiptData.customerName,
-                    totalAmount: subtotal, items: userSession.receiptData.items,
-                    prices: userSession.receiptData.prices, paymentMethod: userSession.receiptData.paymentMethod
+                    totalAmount: userSession.receiptData.prices.reduce((sum, price) => sum + parseFloat(price || 0), 0),
+                    items: userSession.receiptData.items, prices: userSession.receiptData.prices, 
+                    paymentMethod: userSession.receiptData.paymentMethod
                 })).insertedId;
                 const newReceipt = await db.collection('receipts').findOne({_id: newReceiptId});
-
                 await regenerateAndSend(senderId, user, newReceipt, msg);
-
                 if (!isAdmin && !user.isPaid) {
                     await db.collection('users').updateOne({ userId: senderId }, { $inc: { receiptCount: 1 } });
                     const accountDetails = await generateVirtualAccount(user);
@@ -478,16 +525,15 @@ client.on('message', async msg => {
                         await sendMessageWithDelay(msg, reply);
                     }
                 }
-                
                 userStates.delete(senderId);
                 break;
             default:
                 const existingUser = await db.collection('users').findOne({ userId: senderId });
                 if (!existingUser || !existingUser.onboardingComplete) {
                     userStates.set(senderId, { state: 'awaiting_brand_name' });
-                    await sendMessageWithDelay(msg, "👋 Welcome to SmartReceipt!\n\nTo get started, what is your business or brand name?");
+                    await sendMessageWithDelay(msg, "👋 Welcome to SmartReceipt!\n\nTo get started, what is your business name?");
                 } else {
-                    await sendMessageWithDelay(msg, `Welcome back, ${existingUser.brandName}!\n\nType *'new receipt'*, *'stats'*, *'history'*, *'edit'*, or manage your *'products'*.`);
+                    await sendMessageWithDelay(msg, `Welcome back, ${existingUser.brandName}!\n\nType *'new receipt'* to start, or *'commands'* to see all options.`);
                 }
         }
     } catch (err) {
@@ -497,18 +543,19 @@ client.on('message', async msg => {
 
 // --- REGENERATION FUNCTION ---
 async function regenerateAndSend(senderId, user, receiptData, msg, isResend = false) {
-    if(!isResend) await sendMessageWithDelay(msg, `✅ Got it! Regenerating your receipt now...`);
-
-    const subtotal = receiptData.prices.reduce((sum, price) => sum + parseFloat(price || 0), 0);
+    if (!isResend) await sendMessageWithDelay(msg, `✅ Got it! Regenerating your receipt now...`);
     
-    if(!isResend) {
+    const format = user.receiptFormat || 'PNG'; 
+    if(isResend) await sendMessageWithDelay(msg, `Generating your *${format}* receipt...`);
+    
+    const subtotal = receiptData.prices.reduce((sum, price) => sum + parseFloat(price || 0), 0);
+    if (!isResend) {
         await db.collection('receipts').updateOne(
             { _id: new ObjectId(receiptData._id) },
             { $set: {
                 customerName: receiptData.customerName, items: receiptData.items,
                 prices: receiptData.prices.map(p => p.toString()),
-                paymentMethod: receiptData.paymentMethod,
-                totalAmount: subtotal
+                paymentMethod: receiptData.paymentMethod, totalAmount: subtotal
             }}
         );
     }
@@ -522,12 +569,24 @@ async function regenerateAndSend(senderId, user, receiptData, msg, isResend = fa
     
     const fullUrl = `${RECEIPT_BASE_URL}template.${user.preferredTemplate}.html?${urlParams.toString()}`;
     const page = await client.pupBrowser.newPage();
-    await page.setViewport({ width: 800, height: 800, deviceScaleFactor: 2 });
-    await page.goto(fullUrl, { waitUntil: 'networkidle0' });
-    const screenshotBuffer = await page.screenshot({ fullPage: true, type: 'png' });
+    
+    let fileBuffer, mimeType, fileName;
+
+    if (format === 'PDF') {
+        await page.goto(fullUrl, { waitUntil: 'networkidle0' });
+        fileBuffer = await page.pdf({ width: '800px', printBackground: true, pageRanges: '1' });
+        mimeType = 'application/pdf';
+        fileName = `SmartReceipt_${receiptData.customerName}.pdf`;
+    } else { // PNG
+        await page.setViewport({ width: 800, height: 10, deviceScaleFactor: 2 }); // height doesn't matter with fullPage
+        await page.goto(fullUrl, { waitUntil: 'networkidle0' });
+        fileBuffer = await page.screenshot({ fullPage: true, type: 'png' });
+        mimeType = 'image/png';
+        fileName = 'SmartReceipt.png';
+    }
     await page.close();
     
-    const media = new MessageMedia('image/png', screenshotBuffer.toString('base64'), 'SmartReceipt.png');
+    const media = new MessageMedia(mimeType, fileBuffer.toString('base64'), fileName);
     const caption = isResend ? `Here is the receipt for ${receiptData.customerName}.` : `Here is the updated receipt for ${receiptData.customerName}.`;
     await client.sendMessage(senderId, media, { caption: caption });
     
