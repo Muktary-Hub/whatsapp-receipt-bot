@@ -163,12 +163,32 @@ app.post('/admin-data', async (req, res) => {
     }
 });
 
+app.get('/verify-receipt', async (req, res) => {
+    try {
+        const { id } = req.query;
+        if (!id || !ObjectId.isValid(id)) {
+            return res.status(400).json({ error: 'Invalid or missing receipt ID.' });
+        }
+        const receipt = await db.collection('receipts').findOne({ _id: new ObjectId(id) });
+        if (!receipt) {
+            return res.status(404).json({ error: 'Receipt not found.' });
+        }
+        res.status(200).json({
+            customerName: receipt.customerName,
+            totalAmount: receipt.totalAmount,
+            createdAt: receipt.createdAt
+        });
+    } catch (error) {
+        console.error("Error verifying receipt:", error);
+        res.status(500).json({ error: 'An internal server error occurred.' });
+    }
+});
+
 // --- WhatsApp Client Initialization ---
 const client = new Client({
     authStrategy: new LocalAuth({ dataPath: '/app/.wwebjs_auth' }),
     puppeteer: { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu'] }
 });
-
 client.on('qr', qr => console.log(qr));
 client.on('ready', () => console.log('WhatsApp client is ready!'));
 
@@ -193,11 +213,13 @@ client.on('message', async msg => {
                 `*new receipt* - Start creating a new receipt.\n` +
                 `*stats* - Get your sales summary for this month.\n` +
                 `*history* - View your last 5 receipts and resend them.\n` +
-                `*edit* - Make a correction to your last receipt.\n\n` +
+                `*edit* - Make a correction to your last receipt.\n` +
+                `*export* - Get a text file of this month's sales.\n\n` +
                 `*products* - View your saved products.\n` +
                 `*add product* - Start adding new products to your catalog.\n` +
                 `*remove product "Name"* - Delete a product.\n\n` +
-                `*preference* - Choose your receipt format (PDF/Image).\n` +
+                `*format* - Choose your receipt format (PDF/Image).\n` +
+                `*mybrand* - Update your business details.\n` +
                 `*changereceipt* - Change your default receipt template.`;
             await sendMessageWithDelay(msg, commandsList);
             return;
@@ -209,7 +231,7 @@ client.on('message', async msg => {
             await sendMessageWithDelay(msg, "Let's add a new product. What is the product's name?");
             return;
         }
-
+        
         if (lowerCaseText.startsWith('remove product')) {
              if (!user || !user.onboardingComplete) { await sendMessageWithDelay(msg, "Please complete your setup first."); return; }
             const productName = text.substring(14).trim().replace(/"/g, '');
@@ -238,12 +260,20 @@ client.on('message', async msg => {
             await sendMessageWithDelay(msg, productList);
             return;
         }
-
-        if (lowerCaseText === 'preference') {
+        
+        if (lowerCaseText === 'format') {
             if (!user || !user.onboardingComplete) { await sendMessageWithDelay(msg, "Please complete your setup first."); return; }
-            userStates.set(senderId, { state: 'awaiting_preference_choice' });
-            const preferenceMessage = `What format would you like your receipts in?\n\n*1.* Image (PNG) - _Good for sharing_\n*2.* Document (PDF) - _Best for printing & official records_`;
-            await sendMessageWithDelay(msg, preferenceMessage);
+            userStates.set(senderId, { state: 'awaiting_format_choice' });
+            const formatMessage = `What format would you like your receipts in?\n\n*1.* Image (PNG) - _Good for sharing_\n*2.* Document (PDF) - _Best for printing & official records_`;
+            await sendMessageWithDelay(msg, formatMessage);
+            return;
+        }
+
+        if (lowerCaseText === 'mybrand') {
+            if (!user || !user.onboardingComplete) { await sendMessageWithDelay(msg, "Please complete your setup first."); return; }
+            const brandMessage = `*Your Brand Settings*\n\nWhat would you like to update?\n*1.* Brand Name\n*2.* Brand Color\n*3.* Logo\n*4.* Address\n*5.* Contact Info`;
+            userStates.set(senderId, { state: 'awaiting_mybrand_choice' });
+            await sendMessageWithDelay(msg, brandMessage);
             return;
         }
 
@@ -283,6 +313,41 @@ client.on('message', async msg => {
             return;
         }
 
+        if (lowerCaseText === 'export') {
+            if (!user || !user.onboardingComplete) { await sendMessageWithDelay(msg, "Please complete your setup first."); return; }
+            await sendMessageWithDelay(msg, "Gathering your data for this month. Please wait a moment...");
+            const now = new Date();
+            const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+            const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+            const monthName = startOfMonth.toLocaleString('default', { month: 'long' });
+            const receipts = await db.collection('receipts').find({ userId: senderId, createdAt: { $gte: startOfMonth, $lte: endOfMonth } }).sort({ createdAt: 1 }).toArray();
+            if (receipts.length === 0) { await sendMessageWithDelay(msg, "You have no receipts for this month to export."); return; }
+            let fileContent = `SmartReceipt - Sales Report for ${monthName} ${now.getFullYear()}\n`;
+            fileContent += `Brand: ${user.brandName}\n`;
+            fileContent += `Total Receipts: ${receipts.length}\n`;
+            fileContent += "----------------------------------------\n\n";
+            let totalSales = 0;
+            receipts.forEach(receipt => {
+                const date = receipt.createdAt.toLocaleDateString('en-NG');
+                fileContent += `Date: ${date}\n`;
+                fileContent += `Customer: ${receipt.customerName}\n`;
+                fileContent += `Items:\n`;
+                receipt.items.forEach((item, index) => {
+                    const price = parseFloat(receipt.prices[index] || 0);
+                    fileContent += `  - ${item}: ₦${price.toLocaleString()}\n`;
+                });
+                fileContent += `Total: ₦${receipt.totalAmount.toLocaleString()}\n`;
+                fileContent += `Payment Method: ${receipt.paymentMethod}\n`;
+                fileContent += "--------------------\n";
+                totalSales += receipt.totalAmount;
+            });
+            fileContent += `\nGRAND TOTAL FOR ${monthName.toUpperCase()}: ₦${totalSales.toLocaleString()}`;
+            const buffer = Buffer.from(fileContent, 'utf-8');
+            const media = new MessageMedia('text/plain', buffer.toString('base64'), `SmartReceipt_Export_${monthName}.txt`);
+            await client.sendMessage(senderId, media, { caption: `Here is your sales data for ${monthName}.` });
+            return;
+        }
+
         if (lowerCaseText === 'new receipt' && user && !isAdmin && !user.isPaid && user.receiptCount >= 1) {
             await sendMessageWithDelay(msg, "You have exhausted your free limit. To continue, please pay for lifetime access.");
             const accountDetails = await generateVirtualAccount(user);
@@ -309,20 +374,62 @@ client.on('message', async msg => {
             return;
         }
         
-
         // --- STATE-BASED CONVERSATIONS ---
         switch (currentState) {
-            case 'awaiting_edit_choice':
+            case 'awaiting_mybrand_choice':
                 const choice = parseInt(text, 10);
-                if (choice === 1) { userSession.state = 'editing_customer_name'; await sendMessageWithDelay(msg, 'What is the new customer name?'); }
-                else if (choice === 2) { userSession.state = 'editing_items'; await sendMessageWithDelay(msg, 'Please re-enter all items, separated by commas.'); }
-                else if (choice === 3) { userSession.state = 'editing_payment_method'; await sendMessageWithDelay(msg, 'What is the new payment method?'); }
+                if (choice === 1) { userSession.state = 'updating_brand_name'; await sendMessageWithDelay(msg, 'What is your new brand name?'); }
+                else if (choice === 2) { userSession.state = 'updating_brand_color'; await sendMessageWithDelay(msg, 'What is your new brand color?'); }
+                else if (choice === 3) { userSession.state = 'updating_logo'; await sendMessageWithDelay(msg, 'Please upload your new logo.'); }
+                else if (choice === 4) { userSession.state = 'updating_address'; await sendMessageWithDelay(msg, 'What is your new address?'); }
+                else if (choice === 5) { userSession.state = 'updating_contact_info'; await sendMessageWithDelay(msg, 'What is your new contact info?'); }
+                else { await sendMessageWithDelay(msg, "Invalid choice. Please send a number from 1-5."); return; }
+                userStates.set(senderId, userSession);
+                break;
+            case 'updating_brand_name':
+                await db.collection('users').updateOne({ userId: senderId }, { $set: { brandName: text } });
+                await sendMessageWithDelay(msg, '✅ Brand name updated successfully!');
+                userStates.delete(senderId);
+                break;
+            case 'updating_brand_color':
+                await db.collection('users').updateOne({ userId: senderId }, { $set: { brandColor: text } });
+                await sendMessageWithDelay(msg, '✅ Brand color updated successfully!');
+                userStates.delete(senderId);
+                break;
+            case 'updating_logo':
+                if (msg.hasMedia) {
+                    const media = await msg.downloadMedia();
+                    await sendMessageWithDelay(msg, "New logo received! Uploading...");
+                    const logoUrl = await uploadLogo(media);
+                    if (logoUrl) {
+                        await db.collection('users').updateOne({ userId: senderId }, { $set: { logoUrl: logoUrl } });
+                        await sendMessageWithDelay(msg, "✅ Logo updated successfully!");
+                    } else { await sendMessageWithDelay(msg, "Sorry, the logo upload failed."); }
+                } else { await sendMessageWithDelay(msg, "That's not an image. Please upload a logo file."); }
+                userStates.delete(senderId);
+                break;
+            case 'updating_address':
+                await db.collection('users').updateOne({ userId: senderId }, { $set: { address: text } });
+                await sendMessageWithDelay(msg, '✅ Address updated successfully!');
+                userStates.delete(senderId);
+                break;
+            case 'updating_contact_info':
+                await db.collection('users').updateOne({ userId: senderId }, { $set: { contactInfo: text } });
+                await sendMessageWithDelay(msg, '✅ Contact info updated successfully!');
+                userStates.delete(senderId);
+                break;
+
+            case 'awaiting_edit_choice':
+                const editChoice = parseInt(text, 10);
+                if (editChoice === 1) { userSession.state = 'editing_customer_name'; await sendMessageWithDelay(msg, 'What is the new customer name?'); }
+                else if (editChoice === 2) { userSession.state = 'editing_items'; await sendMessageWithDelay(msg, 'Please re-enter all items, separated by commas.'); }
+                else if (editChoice === 3) { userSession.state = 'editing_payment_method'; await sendMessageWithDelay(msg, 'What is the new payment method?'); }
                 else { await sendMessageWithDelay(msg, "Invalid choice. Please send a number (1-3)."); return; }
                 userStates.set(senderId, userSession);
                 break;
             case 'editing_customer_name':
                 userSession.receiptToEdit.customerName = text;
-                await regenerateAndSend(senderId, user, userSession.receiptToEdit, msg);
+                await regenerateAndSend(senderId, user, userSession.receiptToEdit, msg, false, true); // isEdit = true
                 break;
             case 'editing_items':
                 userSession.receiptToEdit.items = text.split(',').map(item => item.trim());
@@ -337,18 +444,18 @@ client.on('message', async msg => {
                     userStates.delete(senderId);
                     return;
                 }
-                await regenerateAndSend(senderId, user, userSession.receiptToEdit, msg);
+                await regenerateAndSend(senderId, user, userSession.receiptToEdit, msg, false, true); // isEdit = true
                 break;
             case 'editing_payment_method':
                 userSession.receiptToEdit.paymentMethod = text;
-                await regenerateAndSend(senderId, user, userSession.receiptToEdit, msg);
+                await regenerateAndSend(senderId, user, userSession.receiptToEdit, msg, false, true); // isEdit = true
                 break;
             
             case 'awaiting_history_choice':
                 const historyChoice = parseInt(text, 10);
                 if (historyChoice >= 1 && historyChoice <= userSession.history.length) {
                     const selectedReceipt = userSession.history[historyChoice - 1];
-                    await regenerateAndSend(senderId, user, selectedReceipt, msg, true); // true = isResend
+                    await regenerateAndSend(senderId, user, selectedReceipt, msg, true); // isResend = true
                 } else {
                     await sendMessageWithDelay(msg, "Invalid number. Please reply with a number from the list (1-5).");
                 }
@@ -421,7 +528,7 @@ client.on('message', async msg => {
                 userStates.set(senderId, userSession);
                 break;
 
-            case 'awaiting_preference_choice':
+            case 'awaiting_format_choice':
                 const formatChoice = text.trim();
                 let format = '';
                 if(formatChoice === '1') format = 'PNG';
@@ -433,6 +540,19 @@ client.on('message', async msg => {
                 await db.collection('users').updateOne({ userId: senderId }, { $set: { receiptFormat: format } });
                 await sendMessageWithDelay(msg, `✅ Preference saved! Your receipts will now be generated as *${format}* files.`);
                 userStates.delete(senderId);
+                break;
+            
+            case 'awaiting_initial_format_choice':
+                 const initialFormatChoice = text.trim();
+                let initialFormat = '';
+                if(initialFormatChoice === '1') initialFormat = 'PNG';
+                else if (initialFormatChoice === '2') initialFormat = 'PDF';
+                else {
+                    await sendMessageWithDelay(msg, "Invalid choice. Please reply with *1* for Image or *2* for Document.");
+                    return;
+                }
+                await db.collection('users').updateOne({ userId: senderId }, { $set: { receiptFormat: initialFormat } });
+                await generateAndSendFinalReceipt(senderId, { ...user, receiptFormat: initialFormat }, userSession.receiptData, msg);
                 break;
 
             case 'awaiting_template_choice':
@@ -449,36 +569,32 @@ client.on('message', async msg => {
                 userSession.receiptData.customerName = text;
                 userSession.state = 'receipt_items';
                 userStates.set(senderId, userSession);
-                await sendMessageWithDelay(msg, `Customer: *${text}*\n\nNow, add items. You can either type them manually (e.g., _Rice, Beans_) or use your catalog (e.g., _Fanta x2, Coke x1_).`);
+                const hasProducts = await db.collection('products').findOne({ userId: senderId });
+                const prompt = hasProducts 
+                    ? `Customer: *${text}*\n\nNow, add items. Use your catalog (e.g., _Fanta x2_) or type items manually (e.g., _Rice, Beans_).`
+                    : `Customer: *${text}*\n\nWhat item(s) did they purchase? (Separate with commas)`;
+                await sendMessageWithDelay(msg, prompt);
                 break;
             case 'receipt_items':
                 const items = [];
                 const prices = [];
                 const manualItems = [];
-
                 const parts = text.split(',');
                 for (const part of parts) {
                     const trimmedPart = part.trim();
                     const quickAddMatch = /(.+)\s+x(\d+)/i.exec(trimmedPart);
-
                     if (quickAddMatch) {
                         const productName = quickAddMatch[1].trim();
                         const quantity = parseInt(quickAddMatch[2], 10);
                         const product = await db.collection('products').findOne({ userId: senderId, name: { $regex: new RegExp(`^${productName}$`, 'i') } });
                         if (product) {
-                            for (let i = 0; i < quantity; i++) {
-                                items.push(product.name);
-                                prices.push(product.price);
-                            }
+                            for (let i = 0; i < quantity; i++) { items.push(product.name); prices.push(product.price); }
                         } else {
                             await sendMessageWithDelay(msg, `⚠️ Product not in catalog: "*${productName}*". It will be treated as a manual item.`);
                             manualItems.push(trimmedPart);
                         }
-                    } else if (trimmedPart) {
-                        manualItems.push(trimmedPart);
-                    }
+                    } else if (trimmedPart) { manualItems.push(trimmedPart); }
                 }
-                
                 if (manualItems.length > 0) {
                     userSession.receiptData.manualItems = manualItems;
                     userSession.receiptData.quickAddItems = items;
@@ -502,30 +618,20 @@ client.on('message', async msg => {
                 }
                 userSession.receiptData.items = [...userSession.receiptData.quickAddItems, ...userSession.receiptData.manualItems];
                 userSession.receiptData.prices = [...userSession.receiptData.quickAddPrices, ...manualPrices].map(p => p.toString());
-
                 userSession.state = 'receipt_payment_method';
                 userStates.set(senderId, userSession);
                 await sendMessageWithDelay(msg, `Prices saved.\n\nWhat was the payment method?`);
                 break;
             case 'receipt_payment_method':
                 userSession.receiptData.paymentMethod = text;
-                const newReceiptId = (await db.collection('receipts').insertOne({
-                    userId: senderId, createdAt: new Date(), customerName: userSession.receiptData.customerName,
-                    totalAmount: userSession.receiptData.prices.reduce((sum, price) => sum + parseFloat(price || 0), 0),
-                    items: userSession.receiptData.items, prices: userSession.receiptData.prices, 
-                    paymentMethod: userSession.receiptData.paymentMethod
-                })).insertedId;
-                const newReceipt = await db.collection('receipts').findOne({_id: newReceiptId});
-                await regenerateAndSend(senderId, user, newReceipt, msg);
-                if (!isAdmin && !user.isPaid) {
-                    await db.collection('users').updateOne({ userId: senderId }, { $inc: { receiptCount: 1 } });
-                    const accountDetails = await generateVirtualAccount(user);
-                    if (accountDetails && accountDetails.bankName) {
-                        const reply = `You have now used your 1 free receipt.\n\n` + `To get lifetime access for *₦${LIFETIME_FEE.toLocaleString()}*, please transfer to this account:\n\n` + `*Bank:* ${accountDetails.bankName}\n` + `*Account Number:* ${accountDetails.accountNumber}\n\n` + `Your access will be unlocked automatically after payment.`;
-                        await sendMessageWithDelay(msg, reply);
-                    }
+                if (!user.receiptFormat) {
+                    userSession.state = 'awaiting_initial_format_choice';
+                    userStates.set(senderId, userSession);
+                    const formatMessage = `Payment method saved. One last thing for your first receipt!\n\nWhat format would you like your receipts in?\n*1.* Image (PNG)\n*2.* Document (PDF)`;
+                    await sendMessageWithDelay(msg, formatMessage);
+                    return;
                 }
-                userStates.delete(senderId);
+                await generateAndSendFinalReceipt(senderId, user, userSession.receiptData, msg);
                 break;
             default:
                 const existingUser = await db.collection('users').findOne({ userId: senderId });
@@ -541,35 +647,37 @@ client.on('message', async msg => {
     }
 });
 
-// --- REGENERATION FUNCTION ---
-async function regenerateAndSend(senderId, user, receiptData, msg, isResend = false) {
-    if (!isResend) await sendMessageWithDelay(msg, `✅ Got it! Regenerating your receipt now...`);
-    
+// --- GENERATION & REGENERATION FUNCTION ---
+async function generateAndSendFinalReceipt(senderId, user, receiptData, msg, isResend = false, isEdit = false) {
+    const message = isResend ? 'Generating your receipt...' : (isEdit ? 'Regenerating your receipt...' : 'Generating your final receipt...');
+    await sendMessageWithDelay(msg, `✅ Got it! ${message}`);
+
     const format = user.receiptFormat || 'PNG'; 
-    if(isResend) await sendMessageWithDelay(msg, `Generating your *${format}* receipt...`);
-    
     const subtotal = receiptData.prices.reduce((sum, price) => sum + parseFloat(price || 0), 0);
-    if (!isResend) {
-        await db.collection('receipts').updateOne(
-            { _id: new ObjectId(receiptData._id) },
-            { $set: {
-                customerName: receiptData.customerName, items: receiptData.items,
-                prices: receiptData.prices.map(p => p.toString()),
-                paymentMethod: receiptData.paymentMethod, totalAmount: subtotal
-            }}
-        );
+    
+    let finalReceiptId = receiptData._id;
+    if (!isResend && !isEdit) {
+        finalReceiptId = (await db.collection('receipts').insertOne({
+            userId: senderId, createdAt: new Date(), customerName: receiptData.customerName,
+            totalAmount: subtotal, items: receiptData.items,
+            prices: receiptData.prices, paymentMethod: receiptData.paymentMethod
+        })).insertedId;
+    } else if (isEdit) {
+        await db.collection('receipts').updateOne({ _id: new ObjectId(receiptData._id) }, { $set: {
+            customerName: receiptData.customerName, items: receiptData.items, prices: receiptData.prices,
+            paymentMethod: receiptData.paymentMethod, totalAmount: subtotal
+        }});
     }
     
     const urlParams = new URLSearchParams({
         bn: user.brandName, bc: user.brandColor, logo: user.logoUrl || '',
         cn: receiptData.customerName, items: receiptData.items.join('||'),
         prices: receiptData.prices.join(','), pm: receiptData.paymentMethod,
-        addr: user.address || '', ci: user.contactInfo || ''
+        addr: user.address || '', ci: user.contactInfo || '', rid: finalReceiptId.toString()
     });
     
     const fullUrl = `${RECEIPT_BASE_URL}template.${user.preferredTemplate}.html?${urlParams.toString()}`;
     const page = await client.pupBrowser.newPage();
-    
     let fileBuffer, mimeType, fileName;
 
     if (format === 'PDF') {
@@ -577,8 +685,8 @@ async function regenerateAndSend(senderId, user, receiptData, msg, isResend = fa
         fileBuffer = await page.pdf({ width: '800px', printBackground: true, pageRanges: '1' });
         mimeType = 'application/pdf';
         fileName = `SmartReceipt_${receiptData.customerName}.pdf`;
-    } else { // PNG
-        await page.setViewport({ width: 800, height: 10, deviceScaleFactor: 2 }); // height doesn't matter with fullPage
+    } else {
+        await page.setViewport({ width: 800, height: 10, deviceScaleFactor: 2 });
         await page.goto(fullUrl, { waitUntil: 'networkidle0' });
         fileBuffer = await page.screenshot({ fullPage: true, type: 'png' });
         mimeType = 'image/png';
@@ -587,9 +695,17 @@ async function regenerateAndSend(senderId, user, receiptData, msg, isResend = fa
     await page.close();
     
     const media = new MessageMedia(mimeType, fileBuffer.toString('base64'), fileName);
-    const caption = isResend ? `Here is the receipt for ${receiptData.customerName}.` : `Here is the updated receipt for ${receiptData.customerName}.`;
+    const caption = `Here is the receipt for ${receiptData.customerName}.`;
     await client.sendMessage(senderId, media, { caption: caption });
     
+    if (!isResend && !isEdit && !isAdmin && !user.isPaid) {
+        await db.collection('users').updateOne({ userId: senderId }, { $inc: { receiptCount: 1 } });
+        const accountDetails = await generateVirtualAccount(user);
+        if (accountDetails && accountDetails.bankName) {
+            const reply = `You have now used your 1 free receipt.\n\n` + `To get lifetime access for *₦${LIFETIME_FEE.toLocaleString()}*, please transfer to this account:\n\n` + `*Bank:* ${accountDetails.bankName}\n` + `*Account Number:* ${accountDetails.accountNumber}\n\n` + `Your access will be unlocked automatically after payment.`;
+            await sendMessageWithDelay(msg, reply);
+        }
+    }
     userStates.delete(senderId);
 }
 
