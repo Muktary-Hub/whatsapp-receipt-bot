@@ -186,8 +186,57 @@ client.on('message', async msg => {
         const isAdmin = ADMIN_NUMBERS.includes(senderId);
         const userSession = userStates.get(senderId) || {};
         const currentState = userSession.state;
-
+        
         // --- COMMAND HANDLING FIRST ---
+        if (lowerCaseText.startsWith('add product')) {
+            if (!user || !user.onboardingComplete) { await sendMessageWithDelay(msg, "Please complete your setup first."); return; }
+            const match = text.match(/(?:add product)\s+"([^"]+)"\s+(\d+(\.\d+)?)/i);
+            if (match) {
+                const productName = match[1];
+                const productPrice = parseFloat(match[2]);
+                await db.collection('products').updateOne(
+                    { userId: senderId, name: { $regex: new RegExp(`^${productName}$`, 'i') } },
+                    { $set: { price: productPrice, name: productName, userId: senderId } },
+                    { upsert: true }
+                );
+                await sendMessageWithDelay(msg, `✅ Product saved: *${productName}* - ₦${productPrice.toLocaleString()}`);
+            } else {
+                await sendMessageWithDelay(msg, 'Invalid format. Please use:\n`add product "Product Name" price`\n\n_Example: add product "Coca-Cola" 300_');
+            }
+            return;
+        }
+
+        if (lowerCaseText.startsWith('remove product')) {
+             if (!user || !user.onboardingComplete) { await sendMessageWithDelay(msg, "Please complete your setup first."); return; }
+            const productName = text.substring(14).trim().replace(/"/g, '');
+            if(productName) {
+                const result = await db.collection('products').deleteOne({ userId: senderId, name: { $regex: new RegExp(`^${productName}$`, 'i') } });
+                if(result.deletedCount > 0) {
+                    await sendMessageWithDelay(msg, `🗑️ Product "*${productName}*" has been removed.`);
+                } else {
+                    await sendMessageWithDelay(msg, `Could not find a product named "*${productName}*".`);
+                }
+            } else {
+                 await sendMessageWithDelay(msg, 'Invalid format. Please use: `remove product "Product Name"`');
+            }
+            return;
+        }
+
+        if (lowerCaseText === 'products') {
+            if (!user || !user.onboardingComplete) { await sendMessageWithDelay(msg, "Please complete your setup first."); return; }
+            const products = await db.collection('products').find({ userId: senderId }).sort({name: 1}).toArray();
+            if(products.length === 0) {
+                await sendMessageWithDelay(msg, "You haven't added any products to your catalog yet. Use `add product \"Name\" price` to start.");
+                return;
+            }
+            let productList = "📦 *Your Product Catalog*\n\n";
+            products.forEach(p => {
+                productList += `*${p.name}* - ₦${p.price.toLocaleString()}\n`;
+            });
+            await sendMessageWithDelay(msg, productList);
+            return;
+        }
+
         if (lowerCaseText === 'stats') {
             if (!user || !user.onboardingComplete) { await sendMessageWithDelay(msg, "Please complete your setup first."); return; }
             const now = new Date();
@@ -223,57 +272,7 @@ client.on('message', async msg => {
             await sendMessageWithDelay(msg, editMessage);
             return;
         }
-
-        if (lowerCaseText === 'export') {
-            if (!user || !user.onboardingComplete) { await sendMessageWithDelay(msg, "Please complete your setup first."); return; }
-            await sendMessageWithDelay(msg, "Gathering your data for this month. Please wait a moment...");
-
-            const now = new Date();
-            const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-            const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
-            const monthName = startOfMonth.toLocaleString('default', { month: 'long' });
-
-            const receipts = await db.collection('receipts').find({
-                userId: senderId,
-                createdAt: { $gte: startOfMonth, $lte: endOfMonth }
-            }).sort({ createdAt: 1 }).toArray();
-
-            if (receipts.length === 0) {
-                await sendMessageWithDelay(msg, "You have no receipts for this month to export.");
-                return;
-            }
-
-            let fileContent = `SmartReceipt - Sales Report for ${monthName} ${now.getFullYear()}\n`;
-            fileContent += `Brand: ${user.brandName}\n`;
-            fileContent += `Total Receipts: ${receipts.length}\n`;
-            fileContent += "----------------------------------------\n\n";
-
-            let totalSales = 0;
-            receipts.forEach(receipt => {
-                const date = receipt.createdAt.toLocaleDateString('en-NG');
-                fileContent += `Date: ${date}\n`;
-                fileContent += `Customer: ${receipt.customerName}\n`;
-                fileContent += `Items:\n`;
-                receipt.items.forEach((item, index) => {
-                    const price = parseFloat(receipt.prices[index] || 0);
-                    fileContent += `  - ${item}: ₦${price.toLocaleString()}\n`;
-                });
-                fileContent += `Total: ₦${receipt.totalAmount.toLocaleString()}\n`;
-                fileContent += `Payment Method: ${receipt.paymentMethod}\n`;
-                fileContent += "--------------------\n";
-                totalSales += receipt.totalAmount;
-            });
-            
-            fileContent += `\nGRAND TOTAL FOR ${monthName.toUpperCase()}: ₦${totalSales.toLocaleString()}`;
-
-            const buffer = Buffer.from(fileContent, 'utf-8');
-            const media = new MessageMedia('text/plain', buffer.toString('base64'), `SmartReceipt_Export_${monthName}.txt`);
-            
-            await client.sendMessage(senderId, media, { caption: `Here is your sales data for ${monthName}.` });
-            return;
-        }
-
-
+        
         if (lowerCaseText === 'new receipt' && user && !isAdmin && !user.isPaid && user.receiptCount >= 1) {
             await sendMessageWithDelay(msg, "You have exhausted your free limit. To continue, please pay for lifetime access.");
             const accountDetails = await generateVirtualAccount(user);
@@ -398,20 +397,60 @@ client.on('message', async msg => {
                 userSession.receiptData.customerName = text;
                 userSession.state = 'receipt_items';
                 userStates.set(senderId, userSession);
-                await sendMessageWithDelay(msg, `Customer: ${text}\n\nWhat item(s) did they purchase? (Separate with commas)`);
+                await sendMessageWithDelay(msg, `Customer: ${text}\n\nWhat item(s) did they purchase? (e.g. Rice, Beans *OR* use your catalog: add "Coke" x2, add "Fanta" x1)`);
                 break;
             case 'receipt_items':
-                userSession.receiptData.items = text.split(',').map(item => item.trim());
-                userSession.state = 'receipt_prices';
-                userStates.set(senderId, userSession);
-                await sendMessageWithDelay(msg, `Items saved.\n\nNow, enter the price for each item in the same order, separated by commas.`);
-                break;
-            case 'receipt_prices':
-                userSession.receiptData.prices = text.split(',').map(price => price.trim());
-                if (userSession.receiptData.items.length !== userSession.receiptData.prices.length) {
-                    await sendMessageWithDelay(msg, `⚠️ Items and prices don't match. Please enter the prices again.`);
-                    return; 
+                const items = [];
+                const prices = [];
+                const manualItems = [];
+
+                const parts = text.split(',');
+                for (const part of parts) {
+                    const trimmedPart = part.trim();
+                    const quickAddMatch = /add "([^"]+)" x(\d+)/i.exec(trimmedPart);
+
+                    if (quickAddMatch) {
+                        const productName = quickAddMatch[1];
+                        const quantity = parseInt(quickAddMatch[2], 10);
+                        const product = await db.collection('products').findOne({ userId: senderId, name: { $regex: new RegExp(`^${productName}$`, 'i') } });
+                        if (product) {
+                            for (let i = 0; i < quantity; i++) {
+                                items.push(product.name);
+                                prices.push(product.price);
+                            }
+                        } else {
+                            await sendMessageWithDelay(msg, `⚠️ Product not found: "*${productName}*". It will be ignored.`);
+                        }
+                    } else if (trimmedPart) {
+                        manualItems.push(trimmedPart);
+                    }
                 }
+                
+                if (manualItems.length > 0) {
+                    userSession.receiptData.manualItems = manualItems;
+                    userSession.receiptData.quickAddItems = items;
+                    userSession.receiptData.quickAddPrices = prices;
+                    userSession.state = 'receipt_manual_prices';
+                    userStates.set(senderId, userSession);
+                    await sendMessageWithDelay(msg, `Quick-add items saved. Now, please enter the prices for your manual items:\n\n*${manualItems.join(', ')}*`);
+                } else {
+                    userSession.receiptData.items = items;
+                    userSession.receiptData.prices = prices.map(p => p.toString());
+                    userSession.state = 'receipt_payment_method';
+                    userStates.set(senderId, userSession);
+                    await sendMessageWithDelay(msg, `Items and prices added from your catalog.\n\nWhat was the payment method?`);
+                }
+                break;
+
+            case 'receipt_manual_prices':
+                const manualPrices = text.split(',').map(p => p.trim());
+                if(manualPrices.length !== userSession.receiptData.manualItems.length) {
+                    await sendMessageWithDelay(msg, "The number of prices does not match the number of manual items. Please try again.");
+                    return;
+                }
+                userSession.receiptData.items = [...userSession.receiptData.quickAddItems, ...userSession.receiptData.manualItems];
+                userSession.receiptData.prices = [...userSession.receiptData.quickAddPrices, ...manualPrices].map(p => p.toString());
+
                 userSession.state = 'receipt_payment_method';
                 userStates.set(senderId, userSession);
                 await sendMessageWithDelay(msg, `Prices saved.\n\nWhat was the payment method?`);
@@ -448,7 +487,7 @@ client.on('message', async msg => {
                     userStates.set(senderId, { state: 'awaiting_brand_name' });
                     await sendMessageWithDelay(msg, "👋 Welcome to SmartReceipt!\n\nTo get started, what is your business or brand name?");
                 } else {
-                    await sendMessageWithDelay(msg, `Welcome back, ${existingUser.brandName}!\n\nType *'new receipt'*, *'stats'*, *'history'*, or *'edit'* to manage your receipts.`);
+                    await sendMessageWithDelay(msg, `Welcome back, ${existingUser.brandName}!\n\nType *'new receipt'*, *'stats'*, *'history'*, *'edit'*, or manage your *'products'*.`);
                 }
         }
     } catch (err) {
@@ -467,7 +506,7 @@ async function regenerateAndSend(senderId, user, receiptData, msg, isResend = fa
             { _id: new ObjectId(receiptData._id) },
             { $set: {
                 customerName: receiptData.customerName, items: receiptData.items,
-                prices: receiptData.prices.map(p => p.toString()), // Ensure prices are strings
+                prices: receiptData.prices.map(p => p.toString()),
                 paymentMethod: receiptData.paymentMethod,
                 totalAmount: subtotal
             }}
@@ -494,7 +533,6 @@ async function regenerateAndSend(senderId, user, receiptData, msg, isResend = fa
     
     userStates.delete(senderId);
 }
-
 
 // --- Main Function ---
 async function startBot() {
