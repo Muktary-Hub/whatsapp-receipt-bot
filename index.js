@@ -179,18 +179,7 @@ client.on('message', async msg => {
 
         // --- COMMAND HANDLING FIRST ---
         if (lowerCaseText === 'commands') {
-            const commandsList = `*Here's what I can do:*\n\n` +
-                `*new receipt* - Start creating a new receipt.\n` +
-                `*stats* - Get your sales summary for this month.\n` +
-                `*history* - View your last 5 receipts and resend them.\n` +
-                `*edit* - Make a correction to your last receipt.\n` +
-                `*export* - Get a text file of this month's sales.\n\n` +
-                `*products* - View your saved products.\n` +
-                `*add product* - Start adding new products to your catalog.\n` +
-                `*remove product "Name"* - Delete a product.\n\n` +
-                `*format* - Choose your receipt format (PDF/Image).\n` +
-                `*mybrand* - Update your business details.\n` +
-                `*changereceipt* - Change your default receipt template.`;
+            const commandsList = `*Here's what I can do:*\n\n` + `*new receipt* - Start creating a new receipt.\n` + `*stats* - Get your sales summary for this month.\n` + `*history* - View your last 5 receipts and resend them.\n` + `*edit* - Make a correction to your last receipt.\n` + `*export* - Get a text file of this month's sales.\n\n` + `*products* - View your saved products.\n` + `*add product* - Start adding new products to your catalog.\n` + `*remove product "Name"* - Delete a product.\n\n` + `*format* - Choose your receipt format (PDF/Image).\n` + `*mybrand* - Update your business details.\n` + `*changereceipt* - Change your default receipt template.`;
             await sendMessageWithDelay(msg, commandsList);
             return;
         }
