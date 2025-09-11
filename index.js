@@ -22,7 +22,7 @@ const PP_BUSINESS_ID = process.env.PP_BUSINESS_ID;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const PORT = 3000;
 const DB_NAME = 'receiptBot';
-const ADMIN_NUMBERS = ['2348146817442@c.us', '2347016370067@c.us'];
+const ADMIN_NUMBERS = ['2348146817448@c.us', '2347016370067@c.us'];
 
 // --- Database, State, and Web Server ---
 let db;
@@ -282,8 +282,18 @@ client.on('message', async msg => {
             return;
         }
 
+        // --- ✨ BUG FIX: SECURE THE EDIT COMMAND ✨ ---
         if (lowerCaseText === 'edit') {
             if (!user || !user.onboardingComplete) { await sendMessageWithDelay(msg, "Please complete your setup first."); return; }
+            
+            // PAYWALL CHECK
+            if (!isAdmin && !user.isPaid && user.receiptCount >= FREE_TRIAL_LIMIT) {
+                userStates.set(senderId, { state: 'awaiting_payment_decision' });
+                const paywallMessage = `Dear *${user.brandName}*,\n\nYou have reached your free trial limit. To edit receipts or create new ones, please subscribe for just *₦${YEARLY_FEE.toLocaleString()} per year*.\n\nWould you like to subscribe?\n\n(Please reply *Yes* or *No*)`;
+                await sendMessageWithDelay(msg, paywallMessage);
+                return;
+            }
+
             const lastReceipt = await db.collection('receipts').findOne({ userId: senderId }, { sort: { createdAt: -1 } });
             if (!lastReceipt) { await sendMessageWithDelay(msg, "You don't have any recent receipts to edit."); return; }
             const editMessage = `Let's edit your last receipt (for *${lastReceipt.customerName}*).\n\nWhat would you like to change?\n*1.* Customer Name\n*2.* Items & Prices\n*3.* Payment Method`;
@@ -396,13 +406,13 @@ client.on('message', async msg => {
             }
             case 'updating_contact_info': {
                 const fullContactText = text;
-                let email = null;
-                let phone = null;
+                let contactEmail = null;
+                let contactPhone = null;
                 const emailMatch = fullContactText.match(/\S+@\S+\.\S+/);
-                if (emailMatch) { email = emailMatch[0]; }
-                const phoneText = fullContactText.replace(email || '', '').trim();
-                if (phoneText.match(/(\+)?\d+/)) { phone = phoneText; }
-                await db.collection('users').updateOne({ userId: senderId }, { $set: { contactInfo: text, contactEmail: email, contactPhone: phone } });
+                if (emailMatch) { contactEmail = emailMatch[0]; }
+                const phoneText = fullContactText.replace(contactEmail || '', '').trim();
+                if (phoneText.match(/(\+)?\d+/)) { contactPhone = phoneText; }
+                await db.collection('users').updateOne({ userId: senderId }, { $set: { contactInfo: text, contactEmail: contactEmail, contactPhone: contactPhone } });
                 await sendMessageWithDelay(msg, '✅ Contact info updated successfully!');
                 userStates.delete(senderId);
                 break;
@@ -496,7 +506,7 @@ client.on('message', async msg => {
             case 'awaiting_address': {
                 await db.collection('users').updateOne({ userId: senderId }, { $set: { address: text } });
                 userStates.set(senderId, { state: 'awaiting_contact_info' });
-                await sendMessageWithDelay(msg, `Address saved.\n\nFinally, what contact info should be on the receipt? (e.g., a phone number or email)`);
+                await sendMessageWithDelay(msg, `Address saved.\n\nFinally, what contact info should be on the receipt? (e.g., a phone number, an email, or both)`);
                 break;
             }
             case 'awaiting_contact_info': {
