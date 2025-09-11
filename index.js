@@ -6,6 +6,7 @@ const FormData = require('form-data');
 const express = require('express');
 const cors = require('cors');
 const qrcode = require('qrcode-terminal');
+const crypto = require('crypto');
 
 // --- BUSINESS MODEL ---
 const YEARLY_FEE = 2000;
@@ -181,11 +182,36 @@ client.on('message', async msg => {
 
         // --- COMMAND HANDLING FIRST ---
         if (lowerCaseText === 'commands') {
-            const commandsList = `*Here's what I can do:*\n\n` + `*new receipt* - Start creating a new receipt.\n` + `*stats* - Get your sales summary for this month.\n` + `*history* - View your last 5 receipts and resend them.\n` + `*edit* - Make a correction to your last receipt.\n` + `*export* - Get a text file of this month's sales.\n\n` + `*products* - View your saved products.\n` + `*add product* - Start adding new products to your catalog.\n` + `*remove product "Name"* - Delete a product.\n\n` + `*format* - Choose your receipt format (PDF/Image).\n` + `*mybrand* - Update your business details.\n` + `*changereceipt* - Change your default receipt template.`;
+            const commandsList = `*Here's what I can do:*\n\n` + `*new receipt* - Start creating a new receipt.\n` + `*stats* - Get your sales summary for this month.\n` + `*history* - View your last 5 receipts and resend them.\n` + `*edit* - Make a correction to your last receipt.\n` + `*export* - Get a text file of this month's sales.\n\n` + `*products* - View your saved products.\n` + `*add product* - Start adding new products to your catalog.\n` + `*remove product "Name"* - Delete a product.\n\n` + `*format* - Choose your receipt format (PDF/Image).\n` + `*mybrand* - Update your business details.\n` + `*changereceipt* - Change your default receipt template.\n\n` + `*backup* - Get a code to restore your account on a new number.\n` + `*restore [code]* - Restore your account using a backup code.`;
             await sendMessageWithDelay(msg, commandsList);
             return;
         }
 
+        if (lowerCaseText === 'backup') {
+            if (!user || !user.onboardingComplete) { await sendMessageWithDelay(msg, "You must complete setup to create a backup."); return; }
+            let backupCode = user.backupCode;
+            if (!backupCode) {
+                backupCode = crypto.randomBytes(4).toString('hex').toUpperCase();
+                await db.collection('users').updateOne({ userId: senderId }, { $set: { backupCode: backupCode } });
+            }
+            const backupMessage = `🔒 *Your Account Backup Code*\n\nHere is your unique recovery code: *${backupCode}*\n\nKeep this code safe! If you ever change your WhatsApp number, you can use this code with the \`restore\` command to get your paid access and all your settings back.`;
+            await sendMessageWithDelay(msg, backupMessage);
+            return;
+        }
+
+        if (lowerCaseText.startsWith('restore')) {
+            const code = text.split(' ')[1];
+            if (!code) { await sendMessageWithDelay(msg, "Please provide your backup code. Example: `restore A1B2C3D4`"); return; }
+            
+            const userToRestore = await db.collection('users').findOne({ backupCode: code.toUpperCase() });
+            if (!userToRestore) { await sendMessageWithDelay(msg, "Sorry, that backup code is not valid."); return; }
+            if (userToRestore.userId === senderId) { await sendMessageWithDelay(msg, "This account is already linked to that backup code."); return; }
+            
+            await db.collection('users').updateOne({ _id: userToRestore._id }, { $set: { userId: senderId } });
+            await sendMessageWithDelay(msg, `✅ *Account Restored!* Welcome back, ${userToRestore.brandName}. All your settings and paid access have been transferred to this number.`);
+            return;
+        }
+        
         if (lowerCaseText === 'add product') {
             if (!user || !user.onboardingComplete) { await sendMessageWithDelay(msg, "Please complete your setup first."); return; }
             userStates.set(senderId, { state: 'adding_product_name' });
@@ -364,7 +390,14 @@ client.on('message', async msg => {
                 userStates.delete(senderId);
                 break;
             case 'updating_contact_info':
-                await db.collection('users').updateOne({ userId: senderId }, { $set: { contactInfo: text } });
+                const fullText = text;
+                let email = null;
+                let phone = null;
+                const emailMatch = fullText.match(/\S+@\S+\.\S+/);
+                if (emailMatch) { email = emailMatch[0]; }
+                const phoneText = fullText.replace(email || '', '').trim();
+                if (phoneText.match(/(\+)?\d+/)) { phone = phoneText; }
+                await db.collection('users').updateOne({ userId: senderId }, { $set: { contactInfo: text, contactEmail: email, contactPhone: phone } });
                 await sendMessageWithDelay(msg, '✅ Contact info updated successfully!');
                 userStates.delete(senderId);
                 break;
@@ -379,7 +412,7 @@ client.on('message', async msg => {
                 break;
             case 'editing_customer_name':
                 userSession.receiptToEdit.customerName = text;
-                await generateAndSendFinalReceipt(senderId, user, userSession.receiptToEdit, msg, false, true); // isEdit = true
+                await generateAndSendFinalReceipt(senderId, user, userSession.receiptToEdit, msg, false, true);
                 break;
             case 'editing_items':
                 userSession.receiptToEdit.items = text.split(',').map(item => item.trim());
@@ -394,18 +427,18 @@ client.on('message', async msg => {
                     userStates.delete(senderId);
                     return;
                 }
-                await generateAndSendFinalReceipt(senderId, user, userSession.receiptToEdit, msg, false, true); // isEdit = true
+                await generateAndSendFinalReceipt(senderId, user, userSession.receiptToEdit, msg, false, true);
                 break;
             case 'editing_payment_method':
                 userSession.receiptToEdit.paymentMethod = text;
-                await generateAndSendFinalReceipt(senderId, user, userSession.receiptToEdit, msg, false, true); // isEdit = true
+                await generateAndSendFinalReceipt(senderId, user, userSession.receiptToEdit, msg, false, true);
                 break;
             
             case 'awaiting_history_choice':
                 const historyChoice = parseInt(text, 10);
                 if (historyChoice >= 1 && historyChoice <= userSession.history.length) {
                     const selectedReceipt = userSession.history[historyChoice - 1];
-                    await generateAndSendFinalReceipt(senderId, user, selectedReceipt, msg, true); // isResend = true
+                    await generateAndSendFinalReceipt(senderId, user, selectedReceipt, msg, true);
                 } else {
                     await sendMessageWithDelay(msg, "Invalid number. Please reply with a number from the list (1-5).");
                 }
@@ -451,7 +484,14 @@ client.on('message', async msg => {
                 await sendMessageWithDelay(msg, `Address saved.\n\nFinally, what contact info should be on the receipt? (e.g., a phone number or email)`);
                 break;
             case 'awaiting_contact_info':
-                await db.collection('users').updateOne({ userId: senderId }, { $set: { contactInfo: text, onboardingComplete: true } });
+                const fullContactText = text;
+                let contactEmail = null;
+                let contactPhone = null;
+                const emailMatch = fullContactText.match(/\S+@\S+\.\S+/);
+                if (emailMatch) { contactEmail = emailMatch[0]; }
+                const phoneText = fullContactText.replace(contactEmail || '', '').trim();
+                if (phoneText.match(/(\+)?\d+/)) { contactPhone = phoneText; }
+                await db.collection('users').updateOne({ userId: senderId }, { $set: { contactInfo: text, contactEmail: contactEmail, contactPhone: contactPhone, onboardingComplete: true } });
                 userStates.delete(senderId);
                 await sendMessageWithDelay(msg, `✅ *Setup Complete!* Your brand profile is all set.\n\nTo create your first receipt, just type:\n*'new receipt'*`);
                 break;
@@ -648,10 +688,11 @@ async function generateAndSendFinalReceipt(senderId, user, receiptData, msg, isR
         bn: user.brandName, bc: user.brandColor, logo: user.logoUrl || '',
         cn: receiptData.customerName, items: receiptData.items.join('||'),
         prices: receiptData.prices.join(','), pm: receiptData.paymentMethod,
-        addr: user.address || '', ci: user.contactInfo || '', rid: finalReceiptId.toString()
+        addr: user.address || '', ciPhone: user.contactPhone || '', ciEmail: user.contactEmail || '',
+        rid: finalReceiptId.toString()
     });
     
-    const fullUrl = `${RECEIPT_BASE_URL}template.${user.preferredTemplate || 1}.html?${urlParams.toString()}`;
+    const fullUrl = `${RECEIPT_BASE_URL}template${user.preferredTemplate || 1}.html?${urlParams.toString()}`;
     
     let page;
     try {
@@ -663,6 +704,11 @@ async function generateAndSendFinalReceipt(senderId, user, receiptData, msg, isR
             await sendMessageWithDelay(msg, `Sorry, there was an error preparing your receipt template. Please check your template files or contact support.`);
             await page.close();
             userStates.delete(senderId);
+/**
+ * @param {import('whatsapp-web.js').Client} client
+ * @param {import('whatsapp-web.js').Message} msg
+ * @param {import('mongodb').Db} db
+ */
             return;
         }
 
