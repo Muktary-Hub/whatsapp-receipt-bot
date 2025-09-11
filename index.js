@@ -7,6 +7,10 @@ const express = require('express');
 const cors = require('cors');
 const qrcode = require('qrcode-terminal');
 
+// --- BUSINESS MODEL ---
+const YEARLY_FEE = 2000;
+const FREE_TRIAL_LIMIT = 3;
+
 // --- Configuration ---
 const MONGO_URI = process.env.MONGO_URI;
 const IMGBB_API_KEY = process.env.IMGBB_API_KEY; 
@@ -16,10 +20,8 @@ const PP_SECRET_KEY = process.env.PP_SECRET_KEY;
 const PP_BUSINESS_ID = process.env.PP_BUSINESS_ID;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const PORT = 3000;
-
 const DB_NAME = 'receiptBot';
-const ADMIN_NUMBERS = ['2348146817448@c.us', '2347016370067@c.us'];
-const LIFETIME_FEE = 5000;
+const ADMIN_NUMBERS = ['2348146817442@c.us', '2347016370067@c.us'];
 
 // --- Database, State, and Web Server ---
 let db;
@@ -133,7 +135,7 @@ app.post('/admin-data', async (req, res) => {
         const totalUsers = await usersCollection.countDocuments();
         const paidUsers = await usersCollection.countDocuments({ isPaid: true });
         const recentUsers = await usersCollection.find().sort({ createdAt: -1 }).limit(10).toArray();
-        const totalRevenue = paidUsers * LIFETIME_FEE;
+        const totalRevenue = paidUsers * YEARLY_FEE;
         res.status(200).json({ totalUsers, paidUsers, totalRevenue, recentUsers });
     } catch (error) {
         console.error("Error fetching admin data:", error);
@@ -172,7 +174,7 @@ client.on('message', async msg => {
         const text = msg.body.trim();
         const lowerCaseText = text.toLowerCase();
         
-        const user = await db.collection('users').findOne({ userId: senderId });
+        let user = await db.collection('users').findOne({ userId: senderId });
         const isAdmin = ADMIN_NUMBERS.includes(senderId);
         const userSession = userStates.get(senderId) || {};
         const currentState = userSession.state;
@@ -299,13 +301,10 @@ client.on('message', async msg => {
             return;
         }
 
-        if (lowerCaseText === 'new receipt' && user && !isAdmin && !user.isPaid && user.receiptCount >= 1) {
-            await sendMessageWithDelay(msg, "You have exhausted your free limit. To continue, please pay for lifetime access.");
-            const accountDetails = await generateVirtualAccount(user);
-            if (accountDetails && accountDetails.bankName) {
-                const reply = `To get lifetime access for *₦${LIFETIME_FEE.toLocaleString()}*, please transfer to this account:\n\n` + `*Bank:* ${accountDetails.bankName}\n` + `*Account Number:* ${accountDetails.accountNumber}\n\n` + `Your access will be unlocked automatically after payment.`;
-                await msg.reply(reply);
-            } else { await msg.reply("Sorry, I couldn't generate a payment account right now. Please try again later."); }
+        if (lowerCaseText === 'new receipt' && user && !isAdmin && !user.isPaid && user.receiptCount >= FREE_TRIAL_LIMIT) {
+            userStates.set(senderId, { state: 'awaiting_payment_decision' });
+            const paywallMessage = `Dear *${user.brandName}*,\n\nYou have reached your limit of ${FREE_TRIAL_LIMIT} free receipts. To help us keep growing and adding more great features, we ask our users to subscribe for just *₦${YEARLY_FEE.toLocaleString()} per year*.\n\nThis will give you unlimited receipts and full access to all features. Would you like to subscribe?\n\n(Please reply *Yes* or *No*)`;
+            await sendMessageWithDelay(msg, paywallMessage);
             return;
         }
 
@@ -380,7 +379,7 @@ client.on('message', async msg => {
                 break;
             case 'editing_customer_name':
                 userSession.receiptToEdit.customerName = text;
-                await regenerateAndSend(senderId, user, userSession.receiptToEdit, msg, false, true); // isEdit = true
+                await generateAndSendFinalReceipt(senderId, user, userSession.receiptToEdit, msg, false, true); // isEdit = true
                 break;
             case 'editing_items':
                 userSession.receiptToEdit.items = text.split(',').map(item => item.trim());
@@ -395,18 +394,18 @@ client.on('message', async msg => {
                     userStates.delete(senderId);
                     return;
                 }
-                await regenerateAndSend(senderId, user, userSession.receiptToEdit, msg, false, true); // isEdit = true
+                await generateAndSendFinalReceipt(senderId, user, userSession.receiptToEdit, msg, false, true); // isEdit = true
                 break;
             case 'editing_payment_method':
                 userSession.receiptToEdit.paymentMethod = text;
-                await regenerateAndSend(senderId, user, userSession.receiptToEdit, msg, false, true); // isEdit = true
+                await generateAndSendFinalReceipt(senderId, user, userSession.receiptToEdit, msg, false, true); // isEdit = true
                 break;
             
             case 'awaiting_history_choice':
                 const historyChoice = parseInt(text, 10);
                 if (historyChoice >= 1 && historyChoice <= userSession.history.length) {
                     const selectedReceipt = userSession.history[historyChoice - 1];
-                    await regenerateAndSend(senderId, user, selectedReceipt, msg, true); // isResend = true
+                    await generateAndSendFinalReceipt(senderId, user, selectedReceipt, msg, true); // isResend = true
                 } else {
                     await sendMessageWithDelay(msg, "Invalid number. Please reply with a number from the list (1-5).");
                 }
@@ -575,14 +574,31 @@ client.on('message', async msg => {
                 break;
             case 'receipt_payment_method':
                 userSession.receiptData.paymentMethod = text;
-                if (!user.receiptFormat) {
+                const updatedUser = await db.collection('users').findOne({ userId: senderId });
+                if (!updatedUser.receiptFormat) {
                     userSession.state = 'awaiting_initial_format_choice';
                     userStates.set(senderId, userSession);
-                    const formatMessage = `Payment method saved. One last thing for your first receipt!\n\nWhat format would you like your receipts in?\n*1.* Image (PNG)\n*2.* Document (PDF)`;
+                    const formatMessage = `Payment method saved. One last thing for your first receipt!\n\nWhat's your preferred format?\n\n*1. Image (PNG)*\nGood for quick sharing. A standard receipt size.\n\n*2. Document (PDF)*\nBest for official records or if you sell many items that need a longer receipt.\n\nPlease reply with *1* or *2*.`;
                     await sendMessageWithDelay(msg, formatMessage);
                     return;
                 }
-                await generateAndSendFinalReceipt(senderId, user, userSession.receiptData, msg);
+                await generateAndSendFinalReceipt(senderId, updatedUser, userSession.receiptData, msg);
+                break;
+             case 'awaiting_payment_decision':
+                if (lowerCaseText === 'yes') {
+                    await sendMessageWithDelay(msg, "Great! Generating a secure payment account for you now...");
+                    const accountDetails = await generateVirtualAccount(user);
+                    if (accountDetails && accountDetails.bankName) {
+                        const reply = `To get lifetime access for *₦${YEARLY_FEE.toLocaleString()}* yearly, please transfer to this account:\n\n` + `*Bank:* ${accountDetails.bankName}\n` + `*Account Number:* ${accountDetails.accountNumber}\n\n` + `Your access will be unlocked automatically after payment.`;
+                        await msg.reply(reply);
+                    } else { await msg.reply("Sorry, I couldn't generate a payment account right now. Please contact support."); }
+                } else if (lowerCaseText === 'no') {
+                    await sendMessageWithDelay(msg, "Okay, thank you for trying SmartReceipt! Your access is now limited. Feel free to come back if you change your mind.");
+                } else {
+                    await sendMessageWithDelay(msg, "Please reply with just 'Yes' or 'No'.");
+                    return;
+                }
+                userStates.delete(senderId);
                 break;
             default:
                 const existingUser = await db.collection('users').findOne({ userId: senderId });
@@ -600,8 +616,9 @@ client.on('message', async msg => {
 
 // --- GENERATION & REGENERATION FUNCTION ---
 async function generateAndSendFinalReceipt(senderId, user, receiptData, msg, isResend = false, isEdit = false) {
-    const message = isResend ? 'Generating your receipt...' : (isEdit ? 'Regenerating your receipt...' : 'Generating your final receipt...');
-    await sendMessageWithDelay(msg, `✅ Got it! ${message}`);
+    const message = isEdit ? 'Regenerating your updated receipt...' : (isResend ? 'Generating your receipt...' : 'Generating your final receipt...');
+    if (!isResend) await sendMessageWithDelay(msg, `✅ Got it! ${message}`);
+    else await sendMessageWithDelay(msg, `Generating your receipt...`);
 
     const format = user.receiptFormat || 'PNG'; 
     const subtotal = receiptData.prices.reduce((sum, price) => sum + parseFloat(price || 0), 0);
@@ -629,13 +646,13 @@ async function generateAndSendFinalReceipt(senderId, user, receiptData, msg, isR
         addr: user.address || '', ci: user.contactInfo || '', rid: finalReceiptId.toString()
     });
     
-    const fullUrl = `${RECEIPT_BASE_URL}template.${user.preferredTemplate}.html?${urlParams.toString()}`;
+    const fullUrl = `${RECEIPT_BASE_URL}template${user.preferredTemplate || 1}.html?${urlParams.toString()}`;
     const page = await client.pupBrowser.newPage();
     let fileBuffer, mimeType, fileName;
 
     if (format === 'PDF') {
         await page.goto(fullUrl, { waitUntil: 'networkidle0' });
-        fileBuffer = await page.pdf({ width: '800px', printBackground: true, pageRanges: '1' });
+        fileBuffer = await page.pdf({ printBackground: true, width: '800px' });
         mimeType = 'application/pdf';
         fileName = `SmartReceipt_${receiptData.customerName}.pdf`;
     } else {
@@ -651,12 +668,14 @@ async function generateAndSendFinalReceipt(senderId, user, receiptData, msg, isR
     const caption = `Here is the receipt for ${receiptData.customerName}.`;
     await client.sendMessage(senderId, media, { caption: caption });
     
-    if (!isResend && !isEdit && !isAdmin && !user.isPaid) {
-        await db.collection('users').updateOne({ userId: senderId }, { $inc: { receiptCount: 1 } });
-        const accountDetails = await generateVirtualAccount(user);
-        if (accountDetails && accountDetails.bankName) {
-            const reply = `You have now used your 1 free receipt.\n\n` + `To get lifetime access for *₦${LIFETIME_FEE.toLocaleString()}*, please transfer to this account:\n\n` + `*Bank:* ${accountDetails.bankName}\n` + `*Account Number:* ${accountDetails.accountNumber}\n\n` + `Your access will be unlocked automatically after payment.`;
-            await sendMessageWithDelay(msg, reply);
+    const userAfterReceipt = await db.collection('users').findOne({ userId: senderId });
+    if (!isResend && !isEdit && !isAdmin && !userAfterReceipt.isPaid) {
+        const newReceiptCount = (userAfterReceipt.receiptCount || 0) + 1;
+        await db.collection('users').updateOne({ userId: senderId }, { $set: { receiptCount: newReceiptCount } });
+        if (newReceiptCount >= FREE_TRIAL_LIMIT) {
+            userStates.set(senderId, { state: 'awaiting_payment_decision' });
+            const paywallMessage = `Dear *${user.brandName}*,\n\nYou have reached your limit of ${FREE_TRIAL_LIMIT} free receipts. To help us keep growing and adding more great features, we ask our users to subscribe for just *₦${YEARLY_FEE.toLocaleString()} per year*.\n\nThis will give you unlimited receipts and full access to all features. Would you like to subscribe?\n\n(Please reply *Yes* or *No*)`;
+            await sendMessageWithDelay(msg, paywallMessage);
         }
     }
     userStates.delete(senderId);
