@@ -5,6 +5,7 @@ const axios = require('axios');
 const FormData = require('form-data');
 const express = require('express');
 const cors = require('cors');
+const qrcode = require('qrcode-terminal');
 
 // --- Configuration ---
 const MONGO_URI = process.env.MONGO_URI;
@@ -640,7 +641,7 @@ async function generateAndSendFinalReceipt(senderId, user, receiptData, msg, isR
     });
     
     const fullUrl = `${RECEIPT_BASE_URL}template.${user.preferredTemplate}.html?${urlParams.toString()}`;
-    const page = await browser.newPage();
+    const page = await client.pupBrowser.newPage();
     let fileBuffer, mimeType, fileName;
 
     if (format === 'PDF') {
@@ -680,8 +681,7 @@ async function startBot() {
     }
     app.listen(PORT, () => console.log(`Webhook server listening on port ${PORT}`));
     await connectToDB();
-    await initializeBrowser();
-    await startSock();
+    client.initialize();
 }
 
 startBot();
