@@ -21,7 +21,7 @@ const PP_BUSINESS_ID = process.env.PP_BUSINESS_ID;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const PORT = 3000;
 const DB_NAME = 'receiptBot';
-const ADMIN_NUMBERS = ['2348146817442@c.us', '2347016370067@c.us'];
+const ADMIN_NUMBERS = ['2348146817448@c.us', '2347016370067@c.us'];
 
 // --- Database, State, and Web Server ---
 let db;
@@ -418,7 +418,7 @@ client.on('message', async msg => {
                     return;
                 }
                 await db.collection('users').deleteMany({ userId: senderId });
-                await db.collection('users').insertOne({ userId: senderId, brandName: text, onboardingComplete: false, receiptCount: 0, isPaid: false, createdAt: new Date(), receiptFormat: 'PNG' });
+                await db.collection('users').insertOne({ userId: senderId, brandName: text, onboardingComplete: false, receiptCount: 0, isPaid: false, createdAt: new Date() });
                 userStates.set(senderId, { state: 'awaiting_brand_color' });
                 await sendMessageWithDelay(msg, `Great! Your brand is "${text}".\n\nWhat's your brand's main color? (e.g., #1D4ED8 or "blue")`);
                 break;
@@ -507,7 +507,6 @@ client.on('message', async msg => {
                     return;
                 }
                 await db.collection('users').updateOne({ userId: senderId }, { $set: { receiptFormat: initialFormat } });
-                // We need to refetch the user object to include the new format preference
                 const finalUser = await db.collection('users').findOne({ userId: senderId });
                 await generateAndSendFinalReceipt(senderId, finalUser, userSession.receiptData, msg);
                 break;
@@ -652,46 +651,57 @@ async function generateAndSendFinalReceipt(senderId, user, receiptData, msg, isR
         addr: user.address || '', ci: user.contactInfo || '', rid: finalReceiptId.toString()
     });
     
-    const fullUrl = `${RECEIPT_BASE_URL}template${user.preferredTemplate || 1}.html?${urlParams.toString()}`;
+    const fullUrl = `${RECEIPT_BASE_URL}template.${user.preferredTemplate || 1}.html?${urlParams.toString()}`;
     
-    const page = await client.pupBrowser.newPage();
-    let fileBuffer, mimeType, fileName;
-    
-    const response = await page.goto(fullUrl, { waitUntil: 'networkidle0' });
-    if (!response.ok()) {
-        console.error(`Failed to load receipt page: ${response.status()} for URL: ${fullUrl}`);
-        await sendMessageWithDelay(msg, `Sorry, there was an error preparing your receipt template. Please check your template files or contact support.`);
-        await page.close();
-        return;
-    }
-
-    if (format === 'PDF') {
-        fileBuffer = await page.pdf({ printBackground: true, width: '800px' });
-        mimeType = 'application/pdf';
-        fileName = `SmartReceipt_${receiptData.customerName}.pdf`;
-    } else {
-        await page.setViewport({ width: 800, height: 10, deviceScaleFactor: 2 });
-        fileBuffer = await page.screenshot({ fullPage: true, type: 'png' });
-        mimeType = 'image/png';
-        fileName = 'SmartReceipt.png';
-    }
-    await page.close();
-    
-    const media = new MessageMedia(mimeType, fileBuffer.toString('base64'), fileName);
-    const caption = `Here is the receipt for ${receiptData.customerName}.`;
-    await client.sendMessage(senderId, media, { caption: caption });
-    
-    const userAfterReceipt = await db.collection('users').findOne({ userId: senderId });
-    if (!isResend && !isEdit && !isAdmin && !userAfterReceipt.isPaid) {
-        const newReceiptCount = (userAfterReceipt.receiptCount || 0) + 1;
-        await db.collection('users').updateOne({ userId: senderId }, { $set: { receiptCount: newReceiptCount } });
-        if (newReceiptCount >= FREE_TRIAL_LIMIT) {
-            userStates.set(senderId, { state: 'awaiting_payment_decision' });
-            const paywallMessage = `Dear *${user.brandName}*,\n\nYou have reached your limit of ${FREE_TRIAL_LIMIT} free receipts. To help us keep growing and adding more great features, we ask our users to subscribe for just *₦${YEARLY_FEE.toLocaleString()} per year*.\n\nThis will give you unlimited receipts and full access to all features. Would you like to subscribe?\n\n(Please reply *Yes* or *No*)`;
-            await sendMessageWithDelay(msg, paywallMessage);
+    let page;
+    try {
+        page = await client.pupBrowser.newPage();
+        const response = await page.goto(fullUrl, { waitUntil: 'networkidle0' });
+        
+        if (!response.ok()) {
+            console.error(`Failed to load receipt page: ${response.status()} for URL: ${fullUrl}`);
+            await sendMessageWithDelay(msg, `Sorry, there was an error preparing your receipt template. Please check your template files or contact support.`);
+            await page.close();
+            userStates.delete(senderId);
+            return;
         }
+
+        let fileBuffer, mimeType, fileName;
+
+        if (format === 'PDF') {
+            fileBuffer = await page.pdf({ printBackground: true, width: '800px' });
+            mimeType = 'application/pdf';
+            fileName = `SmartReceipt_${receiptData.customerName}.pdf`;
+        } else {
+            await page.setViewport({ width: 800, height: 10, deviceScaleFactor: 2 });
+            fileBuffer = await page.screenshot({ fullPage: true, type: 'png' });
+            mimeType = 'image/png';
+            fileName = 'SmartReceipt.png';
+        }
+        await page.close();
+        
+        const media = new MessageMedia(mimeType, fileBuffer.toString('base64'), fileName);
+        const caption = `Here is the receipt for ${receiptData.customerName}.`;
+        await client.sendMessage(senderId, media, { caption: caption });
+        
+        const userAfterReceipt = await db.collection('users').findOne({ userId: senderId });
+        if (!isResend && !isEdit && !isAdmin && !userAfterReceipt.isPaid) {
+            const newReceiptCount = (userAfterReceipt.receiptCount || 0) + 1;
+            await db.collection('users').updateOne({ userId: senderId }, { $set: { receiptCount: newReceiptCount } });
+            if (newReceiptCount >= FREE_TRIAL_LIMIT) {
+                userStates.set(senderId, { state: 'awaiting_payment_decision' });
+                const paywallMessage = `Dear *${user.brandName}*,\n\nYou have reached your limit of ${FREE_TRIAL_LIMIT} free receipts. To help us keep growing and adding more great features, we ask our users to subscribe for just *₦${YEARLY_FEE.toLocaleString()} per year*.\n\nThis will give you unlimited receipts and full access to all features. Would you like to subscribe?\n\n(Please reply *Yes* or *No*)`;
+                await sendMessageWithDelay(msg, paywallMessage);
+            }
+        }
+        userStates.delete(senderId);
+
+    } catch(err) {
+        console.error("Error during receipt generation:", err);
+        await sendMessageWithDelay(msg, "Sorry, something went wrong while creating your receipt image. Please try again.");
+        if (page) await page.close();
+        userStates.delete(senderId);
     }
-    userStates.delete(senderId);
 }
 
 // --- Main Function ---
