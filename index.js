@@ -27,13 +27,14 @@ const app = express();
 app.use(express.json());
 const corsOptions = { origin: ['http://smartnaijaservices.com.ng', 'https://smartnaijaservices.com.ng'] };
 app.use(cors(corsOptions));
+let client;
 
 // --- Database Connection ---
 async function connectToDB() {
     try {
-        const client = new MongoClient(MONGO_URI);
-        await client.connect();
-        db = client.db(DB_NAME);
+        const mongoClient = new MongoClient(MONGO_URI);
+        await mongoClient.connect();
+        db = mongoClient.db(DB_NAME);
         console.log('Successfully connected to MongoDB.');
     } catch (error) {
         console.error('Failed to connect to MongoDB', error);
@@ -63,39 +64,24 @@ async function uploadLogo(media) {
 function formatPhoneNumberForApi(whatsappId) {
     let number = whatsappId.split('@')[0];
     number = number.replace(/\D/g, '');
-    if (number.startsWith('234') && number.length === 13) {
-        return '0' + number.substring(3);
-    }
-    if (number.length === 10 && !number.startsWith('0')) {
-        return '0' + number;
-    }
-    if (number.length === 11 && number.startsWith('0')) {
-        return number;
-    }
+    if (number.startsWith('234') && number.length === 13) { return '0' + number.substring(3); }
+    if (number.length === 10 && !number.startsWith('0')) { return '0' + number; }
+    if (number.length === 11 && number.startsWith('0')) { return number; }
     return "INVALID_PHONE_FORMAT"; 
 }
 
 // --- PAYMENTPOINT INTEGRATION ---
 async function generateVirtualAccount(user) {
     const formattedPhone = formatPhoneNumberForApi(user.userId);
-    if (formattedPhone === "INVALID_PHONE_FORMAT") {
-        console.error(`Could not format phone number for user: ${user.userId}`);
-        return null;
-    }
+    if (formattedPhone === "INVALID_PHONE_FORMAT") { console.error(`Could not format phone number for user: ${user.userId}`); return null; }
     const options = {
         method: 'POST',
         url: 'https://api.paymentpoint.co/api/v1/createVirtualAccount',
-        headers: {
-            'Content-Type': 'application/json',
-            'api-key': PP_API_KEY,
-            'Authorization': `Bearer ${PP_SECRET_KEY}`
-        },
+        headers: { 'Content-Type': 'application/json', 'api-key': PP_API_KEY, 'Authorization': `Bearer ${PP_SECRET_KEY}` },
         data: {
             name: user.brandName.replace(/[^a-zA-Z0-9 ]/g, '').substring(0, 30),
-            email: `${formattedPhone}@smartreceipt.user`,
-            phoneNumber: formattedPhone,
-            bankCode: ['20946'],
-            businessId: PP_BUSINESS_ID
+            email: `${formattedPhone}@smartreceipt.user`, phoneNumber: formattedPhone,
+            bankCode: ['20946'], businessId: PP_BUSINESS_ID
         }
     };
     try {
@@ -122,9 +108,7 @@ app.post('/webhook', async (req, res) => {
         const data = req.body;
         if (data && data.customer && data.customer.customer_phone_number) {
             let phone = data.customer.customer_phone_number;
-            if (phone.startsWith('0') && phone.length === 11) {
-                phone = '234' + phone.substring(1);
-            }
+            if (phone.startsWith('0') && phone.length === 11) { phone = '234' + phone.substring(1); }
             const userId = `${phone}@c.us`;
             console.log(`Payment received for user: ${userId}`);
             const result = await db.collection('users').updateOne({ userId: userId }, { $set: { isPaid: true } });
@@ -143,20 +127,13 @@ app.post('/webhook', async (req, res) => {
 app.post('/admin-data', async (req, res) => {
     try {
         const { password } = req.body;
-        if (password !== ADMIN_PASSWORD) {
-            return res.status(401).json({ error: 'Unauthorized: Incorrect password.' });
-        }
+        if (password !== ADMIN_PASSWORD) { return res.status(401).json({ error: 'Unauthorized: Incorrect password.' }); }
         const usersCollection = db.collection('users');
         const totalUsers = await usersCollection.countDocuments();
         const paidUsers = await usersCollection.countDocuments({ isPaid: true });
         const recentUsers = await usersCollection.find().sort({ createdAt: -1 }).limit(10).toArray();
         const totalRevenue = paidUsers * LIFETIME_FEE;
-        res.status(200).json({
-            totalUsers,
-            paidUsers,
-            totalRevenue,
-            recentUsers
-        });
+        res.status(200).json({ totalUsers, paidUsers, totalRevenue, recentUsers });
     } catch (error) {
         console.error("Error fetching admin data:", error);
         res.status(500).json({ error: 'An internal server error occurred.' });
@@ -166,18 +143,10 @@ app.post('/admin-data', async (req, res) => {
 app.get('/verify-receipt', async (req, res) => {
     try {
         const { id } = req.query;
-        if (!id || !ObjectId.isValid(id)) {
-            return res.status(400).json({ error: 'Invalid or missing receipt ID.' });
-        }
+        if (!id || !ObjectId.isValid(id)) { return res.status(400).json({ error: 'Invalid or missing receipt ID.' }); }
         const receipt = await db.collection('receipts').findOne({ _id: new ObjectId(id) });
-        if (!receipt) {
-            return res.status(404).json({ error: 'Receipt not found.' });
-        }
-        res.status(200).json({
-            customerName: receipt.customerName,
-            totalAmount: receipt.totalAmount,
-            createdAt: receipt.createdAt
-        });
+        if (!receipt) { return res.status(404).json({ error: 'Receipt not found.' }); }
+        res.status(200).json({ customerName: receipt.customerName, totalAmount: receipt.totalAmount, createdAt: receipt.createdAt });
     } catch (error) {
         console.error("Error verifying receipt:", error);
         res.status(500).json({ error: 'An internal server error occurred.' });
@@ -185,11 +154,11 @@ app.get('/verify-receipt', async (req, res) => {
 });
 
 // --- WhatsApp Client Initialization ---
-const client = new Client({
+client = new Client({
     authStrategy: new LocalAuth({ dataPath: '/app/.wwebjs_auth' }),
     puppeteer: { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu'] }
 });
-client.on('qr', qr => console.log(qr));
+client.on('qr', qr => { qrcode.generate(qr, { small: true }); });
 client.on('ready', () => console.log('WhatsApp client is ready!'));
 
 // --- Main Message Handling Logic ---
@@ -237,24 +206,16 @@ client.on('message', async msg => {
             const productName = text.substring(14).trim().replace(/"/g, '');
             if(productName) {
                 const result = await db.collection('products').deleteOne({ userId: senderId, name: { $regex: new RegExp(`^${productName}$`, 'i') } });
-                if(result.deletedCount > 0) {
-                    await sendMessageWithDelay(msg, `🗑️ Product "*${productName}*" has been removed.`);
-                } else {
-                    await sendMessageWithDelay(msg, `Could not find a product named "*${productName}*".`);
-                }
-            } else {
-                 await sendMessageWithDelay(msg, 'Invalid format. Please use: `remove product "Product Name"`');
-            }
+                if(result.deletedCount > 0) { await sendMessageWithDelay(msg, `🗑️ Product "*${productName}*" has been removed.`); }
+                else { await sendMessageWithDelay(msg, `Could not find a product named "*${productName}*".`); }
+            } else { await sendMessageWithDelay(msg, 'Invalid format. Please use: `remove product "Product Name"`'); }
             return;
         }
 
         if (lowerCaseText === 'products') {
             if (!user || !user.onboardingComplete) { await sendMessageWithDelay(msg, "Please complete your setup first."); return; }
             const products = await db.collection('products').find({ userId: senderId }).sort({name: 1}).toArray();
-            if(products.length === 0) {
-                await sendMessageWithDelay(msg, "You haven't added any products to your catalog yet. Use `add product` to start.");
-                return;
-            }
+            if(products.length === 0) { await sendMessageWithDelay(msg, "You haven't added any products to your catalog yet. Use `add product` to start."); return; }
             let productList = "📦 *Your Product Catalog*\n\n";
             products.forEach(p => { productList += `*${p.name}* - ₦${p.price.toLocaleString()}\n`; });
             await sendMessageWithDelay(msg, productList);
@@ -543,7 +504,7 @@ client.on('message', async msg => {
                 break;
             
             case 'awaiting_initial_format_choice':
-                 const initialFormatChoice = text.trim();
+                const initialFormatChoice = text.trim();
                 let initialFormat = '';
                 if(initialFormatChoice === '1') initialFormat = 'PNG';
                 else if (initialFormatChoice === '2') initialFormat = 'PDF';
@@ -656,17 +617,19 @@ async function generateAndSendFinalReceipt(senderId, user, receiptData, msg, isR
     const subtotal = receiptData.prices.reduce((sum, price) => sum + parseFloat(price || 0), 0);
     
     let finalReceiptId = receiptData._id;
-    if (!isResend && !isEdit) {
-        finalReceiptId = (await db.collection('receipts').insertOne({
-            userId: senderId, createdAt: new Date(), customerName: receiptData.customerName,
-            totalAmount: subtotal, items: receiptData.items,
-            prices: receiptData.prices, paymentMethod: receiptData.paymentMethod
-        })).insertedId;
-    } else if (isEdit) {
-        await db.collection('receipts').updateOne({ _id: new ObjectId(receiptData._id) }, { $set: {
-            customerName: receiptData.customerName, items: receiptData.items, prices: receiptData.prices,
-            paymentMethod: receiptData.paymentMethod, totalAmount: subtotal
-        }});
+    if (!isResend) {
+        if (isEdit) {
+            await db.collection('receipts').updateOne({ _id: new ObjectId(receiptData._id) }, { $set: {
+                customerName: receiptData.customerName, items: receiptData.items, prices: receiptData.prices.map(p => p.toString()),
+                paymentMethod: receiptData.paymentMethod, totalAmount: subtotal
+            }});
+        } else {
+             finalReceiptId = (await db.collection('receipts').insertOne({
+                userId: senderId, createdAt: new Date(), customerName: receiptData.customerName,
+                totalAmount: subtotal, items: receiptData.items,
+                prices: receiptData.prices.map(p=>p.toString()), paymentMethod: receiptData.paymentMethod
+            })).insertedId;
+        }
     }
     
     const urlParams = new URLSearchParams({
@@ -677,7 +640,7 @@ async function generateAndSendFinalReceipt(senderId, user, receiptData, msg, isR
     });
     
     const fullUrl = `${RECEIPT_BASE_URL}template.${user.preferredTemplate}.html?${urlParams.toString()}`;
-    const page = await client.pupBrowser.newPage();
+    const page = await browser.newPage();
     let fileBuffer, mimeType, fileName;
 
     if (format === 'PDF') {
@@ -717,8 +680,8 @@ async function startBot() {
     }
     app.listen(PORT, () => console.log(`Webhook server listening on port ${PORT}`));
     await connectToDB();
-    client.initialize();
+    await initializeBrowser();
+    await startSock();
 }
 
 startBot();
-
