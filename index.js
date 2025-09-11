@@ -412,6 +412,11 @@ client.on('message', async msg => {
                 break;
 
             case 'awaiting_brand_name':
+                const existingBrand = await db.collection('users').findOne({ brandName: { $regex: new RegExp(`^${text}$`, 'i') } });
+                if (existingBrand) {
+                    await sendMessageWithDelay(msg, "Sorry, that business name is already registered. Please choose a different name.");
+                    return;
+                }
                 await db.collection('users').deleteMany({ userId: senderId });
                 await db.collection('users').insertOne({ userId: senderId, brandName: text, onboardingComplete: false, receiptCount: 0, isPaid: false, createdAt: new Date(), receiptFormat: 'PNG' });
                 userStates.set(senderId, { state: 'awaiting_brand_color' });
@@ -502,7 +507,9 @@ client.on('message', async msg => {
                     return;
                 }
                 await db.collection('users').updateOne({ userId: senderId }, { $set: { receiptFormat: initialFormat } });
-                await generateAndSendFinalReceipt(senderId, { ...user, receiptFormat: initialFormat }, userSession.receiptData, msg);
+                // We need to refetch the user object to include the new format preference
+                const finalUser = await db.collection('users').findOne({ userId: senderId });
+                await generateAndSendFinalReceipt(senderId, finalUser, userSession.receiptData, msg);
                 break;
 
             case 'awaiting_template_choice':
@@ -578,7 +585,7 @@ client.on('message', async msg => {
                 if (!updatedUser.receiptFormat) {
                     userSession.state = 'awaiting_initial_format_choice';
                     userStates.set(senderId, userSession);
-                    const formatMessage = `Payment method saved. One last thing for your first receipt!\n\nWhat's your preferred format?\n\n*1. Image (PNG)*\nGood for quick sharing. A standard receipt size.\n\n*2. Document (PDF)*\nBest for official records or if you sell many items that need a longer receipt.\n\nPlease reply with *1* or *2*.`;
+                    const formatMessage = `Payment method saved.\n\nOne last thing for your first receipt! What's your preferred format?\n\n*1. Image (PNG)*\n_Good for quick sharing. A standard receipt size._\n\n*2. Document (PDF)*\n_Best for official records or if you sell many items that need a longer receipt._\n\nPlease reply with *1* or *2*.`;
                     await sendMessageWithDelay(msg, formatMessage);
                     return;
                 }
@@ -616,9 +623,8 @@ client.on('message', async msg => {
 
 // --- GENERATION & REGENERATION FUNCTION ---
 async function generateAndSendFinalReceipt(senderId, user, receiptData, msg, isResend = false, isEdit = false) {
-    const message = isEdit ? 'Regenerating your updated receipt...' : (isResend ? 'Generating your receipt...' : 'Generating your final receipt...');
-    if (!isResend) await sendMessageWithDelay(msg, `✅ Got it! ${message}`);
-    else await sendMessageWithDelay(msg, `Generating your receipt...`);
+    const message = isEdit ? 'Regenerating your updated receipt...' : (isResend ? 'Generating your receipt...' : 'Generating your receipt...');
+    await sendMessageWithDelay(msg, `✅ Got it! ${message}`);
 
     const format = user.receiptFormat || 'PNG'; 
     const subtotal = receiptData.prices.reduce((sum, price) => sum + parseFloat(price || 0), 0);
@@ -647,17 +653,24 @@ async function generateAndSendFinalReceipt(senderId, user, receiptData, msg, isR
     });
     
     const fullUrl = `${RECEIPT_BASE_URL}template${user.preferredTemplate || 1}.html?${urlParams.toString()}`;
+    
     const page = await client.pupBrowser.newPage();
     let fileBuffer, mimeType, fileName;
+    
+    const response = await page.goto(fullUrl, { waitUntil: 'networkidle0' });
+    if (!response.ok()) {
+        console.error(`Failed to load receipt page: ${response.status()} for URL: ${fullUrl}`);
+        await sendMessageWithDelay(msg, `Sorry, there was an error preparing your receipt template. Please check your template files or contact support.`);
+        await page.close();
+        return;
+    }
 
     if (format === 'PDF') {
-        await page.goto(fullUrl, { waitUntil: 'networkidle0' });
         fileBuffer = await page.pdf({ printBackground: true, width: '800px' });
         mimeType = 'application/pdf';
         fileName = `SmartReceipt_${receiptData.customerName}.pdf`;
     } else {
         await page.setViewport({ width: 800, height: 10, deviceScaleFactor: 2 });
-        await page.goto(fullUrl, { waitUntil: 'networkidle0' });
         fileBuffer = await page.screenshot({ fullPage: true, type: 'png' });
         mimeType = 'image/png';
         fileName = 'SmartReceipt.png';
