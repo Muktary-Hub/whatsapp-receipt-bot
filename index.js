@@ -199,7 +199,26 @@ client.on('message', async msg => {
         const userSession = userStates.get(senderId) || {};
         const currentState = userSession.state;
 
-        // --- COMMAND HANDLING FIRST ---
+        // --- THE MASTER SECURITY GUARD ---
+        const protectedCommands = ['new receipt', 'stats', 'history', 'edit', 'export', 'products', 'add product', 'remove product', 'format', 'mybrand', 'changereceipt'];
+        const commandTrigger = protectedCommands.find(cmd => lowerCaseText.startsWith(cmd));
+
+        if (commandTrigger) {
+            if (!user || !user.onboardingComplete) {
+                await sendMessageWithDelay(msg, "You must complete your brand setup first. Just send 'Hi' to get started.");
+                return;
+            }
+            if (!subscriptionActive && user.receiptCount >= FREE_TRIAL_LIMIT) {
+                userStates.set(senderId, { state: 'awaiting_payment_decision' });
+                const paywallMessage = user.subscriptionExpiryDate
+                    ? `Dear *${user.brandName}*,\n\nYour yearly subscription has expired. To continue using SmartReceipt, you need to renew.\n\nWould you like to renew your subscription for *₦${YEARLY_FEE.toLocaleString()}* for another year?\n\n(Please reply *Yes* or *No*)`
+                    : `Dear *${user.brandName}*,\n\nYou have reached your limit of ${FREE_TRIAL_LIMIT} free receipts. Would you like to subscribe for just *₦${YEARLY_FEE.toLocaleString()} per year*?\n\n(Please reply *Yes* or *No*)`;
+                await sendMessageWithDelay(msg, paywallMessage);
+                return;
+            }
+        }
+        
+        // --- COMMAND HANDLING ---
         if (lowerCaseText === 'commands') {
             const commandsList = `*Here's what I can do:*\n\n` + `*new receipt* - Start creating a new receipt.\n` + `*stats* - Get your sales summary for this month.\n` + `*history* - View your last 5 receipts and resend them.\n` + `*edit* - Make a correction to your last receipt.\n` + `*export* - Get a text file of this month's sales.\n\n` + `*products* - View your saved products.\n` + `*add product* - Start adding new products to your catalog.\n` + `*remove product "Name"* - Delete a product.\n\n` + `*format* - Choose your receipt format (PDF/Image).\n` + `*mybrand* - Update your business details.\n` + `*changereceipt* - Change your default receipt template.\n\n` + `*backup* - Get a code to restore your account on a new number.\n` + `*restore [code]* - Restore your account using a backup code.`;
             await sendMessageWithDelay(msg, commandsList);
@@ -231,150 +250,114 @@ client.on('message', async msg => {
             return;
         }
         
-        if (lowerCaseText === 'add product') {
-            if (!user || !user.onboardingComplete) { await sendMessageWithDelay(msg, "Please complete your setup first."); return; }
-            userStates.set(senderId, { state: 'adding_product_name' });
-            await sendMessageWithDelay(msg, "Let's add a new product. What is the product's name?");
-            return;
-        }
-        
-        if (lowerCaseText.startsWith('remove product')) {
-             if (!user || !user.onboardingComplete) { await sendMessageWithDelay(msg, "Please complete your setup first."); return; }
-            const productName = text.substring(14).trim().replace(/"/g, '');
-            if(productName) {
-                const result = await db.collection('products').deleteOne({ userId: senderId, name: { $regex: new RegExp(`^${productName}$`, 'i') } });
-                if(result.deletedCount > 0) { await sendMessageWithDelay(msg, `🗑️ Product "*${productName}*" has been removed.`); }
-                else { await sendMessageWithDelay(msg, `Could not find a product named "*${productName}*".`); }
-            } else { await sendMessageWithDelay(msg, 'Invalid format. Please use: `remove product "Product Name"`'); }
-            return;
-        }
-
-        if (lowerCaseText === 'products') {
-            if (!user || !user.onboardingComplete) { await sendMessageWithDelay(msg, "Please complete your setup first."); return; }
-            const products = await db.collection('products').find({ userId: senderId }).sort({name: 1}).toArray();
-            if(products.length === 0) { await sendMessageWithDelay(msg, "You haven't added any products to your catalog yet. Use `add product` to start."); return; }
-            let productList = "📦 *Your Product Catalog*\n\n";
-            products.forEach(p => { productList += `*${p.name}* - ₦${p.price.toLocaleString()}\n`; });
-            await sendMessageWithDelay(msg, productList);
-            return;
-        }
-        
-        if (lowerCaseText === 'format') {
-            if (!user || !user.onboardingComplete) { await sendMessageWithDelay(msg, "Please complete your setup first."); return; }
-            userStates.set(senderId, { state: 'awaiting_format_choice' });
-            const formatMessage = `What format would you like your receipts in?\n\n*1.* Image (PNG) - _Good for sharing_\n*2.* Document (PDF) - _Best for printing & official records_`;
-            await sendMessageWithDelay(msg, formatMessage);
-            return;
-        }
-
-        if (lowerCaseText === 'mybrand') {
-            if (!user || !user.onboardingComplete) { await sendMessageWithDelay(msg, "Please complete your setup first."); return; }
-            const brandMessage = `*Your Brand Settings*\n\nWhat would you like to update?\n*1.* Brand Name\n*2.* Brand Color\n*3.* Logo\n*4.* Address\n*5.* Contact Info`;
-            userStates.set(senderId, { state: 'awaiting_mybrand_choice' });
-            await sendMessageWithDelay(msg, brandMessage);
-            return;
-        }
-
-        if (lowerCaseText === 'stats') {
-            if (!user || !user.onboardingComplete) { await sendMessageWithDelay(msg, "Please complete your setup first."); return; }
-            const now = new Date();
-            const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-            const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
-            const receipts = await db.collection('receipts').find({ userId: senderId, createdAt: { $gte: startOfMonth, $lte: endOfMonth } }).toArray();
-            const totalSales = receipts.reduce((sum, receipt) => sum + receipt.totalAmount, 0);
-            const receiptCount = receipts.length;
-            const monthName = startOfMonth.toLocaleString('default', { month: 'long' });
-            let statsMessage = `📊 *Your Stats for ${monthName}*\n\n*Receipts Generated:* ${receiptCount}\n*Total Sales:* ₦${totalSales.toLocaleString()}`;
-            await sendMessageWithDelay(msg, statsMessage);
-            return;
-        }
-
-        if (lowerCaseText === 'history') {
-            if (!user || !user.onboardingComplete) { await sendMessageWithDelay(msg, "Please complete your setup first."); return; }
-            const recentReceipts = await db.collection('receipts').find({ userId: senderId }).sort({ createdAt: -1 }).limit(5).toArray();
-            if (recentReceipts.length === 0) { await sendMessageWithDelay(msg, "You haven't generated any receipts yet."); return; }
-            let historyMessage = "🧾 *Your 5 Most Recent Receipts:*\n\n";
-            recentReceipts.forEach((r, i) => { historyMessage += `*${i + 1}.* For *${r.customerName}* - ₦${r.totalAmount.toLocaleString()}\n`; });
-            historyMessage += "\nTo resend a receipt, just reply with its number (1-5).";
-            userStates.set(senderId, { state: 'awaiting_history_choice', history: recentReceipts });
-            await sendMessageWithDelay(msg, historyMessage);
-            return;
-        }
-
-        if (lowerCaseText === 'edit') {
-            if (!user || !user.onboardingComplete) { await sendMessageWithDelay(msg, "Please complete your setup first."); return; }
-            if (!subscriptionActive && user.receiptCount >= FREE_TRIAL_LIMIT) {
-                userStates.set(senderId, { state: 'awaiting_payment_decision' });
-                const paywallMessage = `Dear *${user.brandName}*,\n\nYou have reached your free trial limit. To edit receipts or create new ones, please subscribe for just *₦${YEARLY_FEE.toLocaleString()} per year*.\n\nWould you like to subscribe?\n\n(Please reply *Yes* or *No*)`;
-                await sendMessageWithDelay(msg, paywallMessage);
+        if (commandTrigger) {
+            if (lowerCaseText === 'new receipt') {
+                userStates.set(senderId, { state: 'receipt_customer_name', receiptData: {} });
+                await sendMessageWithDelay(msg, '🧾 *New Receipt Started*\n\nWho is the customer?');
                 return;
             }
-            const lastReceipt = await db.collection('receipts').findOne({ userId: senderId }, { sort: { createdAt: -1 } });
-            if (!lastReceipt) { await sendMessageWithDelay(msg, "You don't have any recent receipts to edit."); return; }
-            const editMessage = `Let's edit your last receipt (for *${lastReceipt.customerName}*).\n\nWhat would you like to change?\n*1.* Customer Name\n*2.* Items & Prices\n*3.* Payment Method`;
-            userStates.set(senderId, { state: 'awaiting_edit_choice', receiptToEdit: lastReceipt, editCount: 0 });
-            await sendMessageWithDelay(msg, editMessage);
-            return;
-        }
-
-        if (lowerCaseText === 'export') {
-            if (!user || !user.onboardingComplete) { await sendMessageWithDelay(msg, "Please complete your setup first."); return; }
-            await sendMessageWithDelay(msg, "Gathering your data for this month. Please wait a moment...");
-            const now = new Date();
-            const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-            const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
-            const monthName = startOfMonth.toLocaleString('default', { month: 'long' });
-            const receipts = await db.collection('receipts').find({ userId: senderId, createdAt: { $gte: startOfMonth, $lte: endOfMonth } }).sort({ createdAt: 1 }).toArray();
-            if (receipts.length === 0) { await sendMessageWithDelay(msg, "You have no receipts for this month to export."); return; }
-            let fileContent = `SmartReceipt - Sales Report for ${monthName} ${now.getFullYear()}\n`;
-            fileContent += `Brand: ${user.brandName}\n`;
-            fileContent += `Total Receipts: ${receipts.length}\n`;
-            fileContent += "----------------------------------------\n\n";
-            let totalSales = 0;
-            receipts.forEach(receipt => {
-                const date = receipt.createdAt.toLocaleDateString('en-NG');
-                fileContent += `Date: ${date}\n`;
-                fileContent += `Customer: ${receipt.customerName}\n`;
-                fileContent += `Items:\n`;
-                receipt.items.forEach((item, index) => {
-                    const price = parseFloat(receipt.prices[index] || 0);
-                    fileContent += `  - ${item}: ₦${price.toLocaleString()}\n`;
-                });
-                fileContent += `Total: ₦${receipt.totalAmount.toLocaleString()}\n`;
-                fileContent += `Payment Method: ${receipt.paymentMethod}\n`;
-                fileContent += "--------------------\n";
-                totalSales += receipt.totalAmount;
-            });
-            fileContent += `\nGRAND TOTAL FOR ${monthName.toUpperCase()}: ₦${totalSales.toLocaleString()}`;
-            const buffer = Buffer.from(fileContent, 'utf-8');
-            const media = new MessageMedia('text/plain', buffer.toString('base64'), `SmartReceipt_Export_${monthName}.txt`);
-            await client.sendMessage(senderId, media, { caption: `Here is your sales data for ${monthName}.` });
-            return;
-        }
-
-        if (lowerCaseText === 'new receipt' && user && !subscriptionActive && user.receiptCount >= FREE_TRIAL_LIMIT) {
-            userStates.set(senderId, { state: 'awaiting_payment_decision' });
-            const paywallMessage = user.subscriptionExpiryDate
-                ? `Dear *${user.brandName}*,\n\nYour yearly subscription has expired. To continue creating unlimited receipts, you need to renew.\n\nWould you like to renew your subscription for *₦${YEARLY_FEE.toLocaleString()}* for another year?\n\n(Please reply *Yes* or *No*)`
-                : `Dear *${user.brandName}*,\n\nYou have reached your limit of ${FREE_TRIAL_LIMIT} free receipts. Would you like to subscribe for just *₦${YEARLY_FEE.toLocaleString()} per year*?\n\n(Please reply *Yes* or *No*)`;
-            await sendMessageWithDelay(msg, paywallMessage);
-            return;
-        }
-
-        if (['new receipt', 'changereceipt'].includes(lowerCaseText)) {
-            if (user && user.onboardingComplete) {
-                if (lowerCaseText === 'changereceipt' || !user.preferredTemplate) {
-                    userStates.set(senderId, { state: 'awaiting_template_choice' });
-                    await sendMessageWithDelay(msg, "Please choose your receipt template.\n\nView our 6 high-class designs in the catalog, then send the number of your choice (1-6).");
-                } else {
-                    userStates.set(senderId, { state: 'receipt_customer_name', receiptData: {} });
-                    await sendMessageWithDelay(msg, '🧾 *New Receipt Started*\n\nWho is the customer?');
-                }
-            } else {
-                userStates.set(senderId, { state: 'awaiting_brand_name' });
-                await sendMessageWithDelay(msg, "👋 Welcome to SmartReceipt!\n\nLet's get your brand set up. First, what is your business name?");
+            if (lowerCaseText === 'changereceipt') {
+                userStates.set(senderId, { state: 'awaiting_template_choice' });
+                await sendMessageWithDelay(msg, "Please choose your new receipt template.\n\nView our 6 high-class designs in the catalog, then send the number of your choice (1-6).");
+                return;
             }
-            return;
+            if (lowerCaseText === 'stats') {
+                const now = new Date();
+                const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+                const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+                const receipts = await db.collection('receipts').find({ userId: senderId, createdAt: { $gte: startOfMonth, $lte: endOfMonth } }).toArray();
+                const totalSales = receipts.reduce((sum, receipt) => sum + receipt.totalAmount, 0);
+                const receiptCount = receipts.length;
+                const monthName = startOfMonth.toLocaleString('default', { month: 'long' });
+                let statsMessage = `📊 *Your Stats for ${monthName}*\n\n*Receipts Generated:* ${receiptCount}\n*Total Sales:* ₦${totalSales.toLocaleString()}`;
+                await sendMessageWithDelay(msg, statsMessage);
+                return;
+            }
+            if (lowerCaseText === 'history') {
+                const recentReceipts = await db.collection('receipts').find({ userId: senderId }).sort({ createdAt: -1 }).limit(5).toArray();
+                if (recentReceipts.length === 0) { await sendMessageWithDelay(msg, "You haven't generated any receipts yet."); return; }
+                let historyMessage = "🧾 *Your 5 Most Recent Receipts:*\n\n";
+                recentReceipts.forEach((r, i) => { historyMessage += `*${i + 1}.* For *${r.customerName}* - ₦${r.totalAmount.toLocaleString()}\n`; });
+                historyMessage += "\nTo resend a receipt, just reply with its number (1-5).";
+                userStates.set(senderId, { state: 'awaiting_history_choice', history: recentReceipts });
+                await sendMessageWithDelay(msg, historyMessage);
+                return;
+            }
+            if (lowerCaseText === 'edit') {
+                const lastReceipt = await db.collection('receipts').findOne({ userId: senderId }, { sort: { createdAt: -1 } });
+                if (!lastReceipt) { await sendMessageWithDelay(msg, "You don't have any recent receipts to edit."); return; }
+                const editMessage = `Let's edit your last receipt (for *${lastReceipt.customerName}*).\n\nWhat would you like to change?\n*1.* Customer Name\n*2.* Items & Prices\n*3.* Payment Method`;
+                userStates.set(senderId, { state: 'awaiting_edit_choice', receiptToEdit: lastReceipt, editCount: 0 });
+                await sendMessageWithDelay(msg, editMessage);
+                return;
+            }
+            if (lowerCaseText === 'export') {
+                await sendMessageWithDelay(msg, "Gathering your data for this month. Please wait a moment...");
+                const now = new Date();
+                const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+                const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+                const monthName = startOfMonth.toLocaleString('default', { month: 'long' });
+                const receipts = await db.collection('receipts').find({ userId: senderId, createdAt: { $gte: startOfMonth, $lte: endOfMonth } }).sort({ createdAt: 1 }).toArray();
+                if (receipts.length === 0) { await sendMessageWithDelay(msg, "You have no receipts for this month to export."); return; }
+                let fileContent = `SmartReceipt - Sales Report for ${monthName} ${now.getFullYear()}\n`;
+                fileContent += `Brand: ${user.brandName}\n`;
+                fileContent += `Total Receipts: ${receipts.length}\n`;
+                fileContent += "----------------------------------------\n\n";
+                let totalSales = 0;
+                receipts.forEach(receipt => {
+                    const date = receipt.createdAt.toLocaleDateString('en-NG');
+                    fileContent += `Date: ${date}\n`;
+                    fileContent += `Customer: ${receipt.customerName}\n`;
+                    fileContent += `Items:\n`;
+                    receipt.items.forEach((item, index) => {
+                        const price = parseFloat(receipt.prices[index] || 0);
+                        fileContent += `  - ${item}: ₦${price.toLocaleString()}\n`;
+                    });
+                    fileContent += `Total: ₦${receipt.totalAmount.toLocaleString()}\n`;
+                    fileContent += `Payment Method: ${receipt.paymentMethod}\n`;
+                    fileContent += "--------------------\n";
+                    totalSales += receipt.totalAmount;
+                });
+                fileContent += `\nGRAND TOTAL FOR ${monthName.toUpperCase()}: ₦${totalSales.toLocaleString()}`;
+                const buffer = Buffer.from(fileContent, 'utf-8');
+                const media = new MessageMedia('text/plain', buffer.toString('base64'), `SmartReceipt_Export_${monthName}.txt`);
+                await client.sendMessage(senderId, media, { caption: `Here is your sales data for ${monthName}.` });
+                return;
+            }
+             if (lowerCaseText === 'add product') {
+                userStates.set(senderId, { state: 'adding_product_name' });
+                await sendMessageWithDelay(msg, "Let's add a new product. What is the product's name?");
+                return;
+            }
+            if (lowerCaseText.startsWith('remove product')) {
+                const productName = text.substring(14).trim().replace(/"/g, '');
+                if(productName) {
+                    const result = await db.collection('products').deleteOne({ userId: senderId, name: { $regex: new RegExp(`^${productName}$`, 'i') } });
+                    if(result.deletedCount > 0) { await sendMessageWithDelay(msg, `🗑️ Product "*${productName}*" has been removed.`); }
+                    else { await sendMessageWithDelay(msg, `Could not find a product named "*${productName}*".`); }
+                } else { await sendMessageWithDelay(msg, 'Invalid format. Please use: `remove product "Product Name"`'); }
+                return;
+            }
+            if (lowerCaseText === 'products') {
+                const products = await db.collection('products').find({ userId: senderId }).sort({name: 1}).toArray();
+                if(products.length === 0) { await sendMessageWithDelay(msg, "You haven't added any products to your catalog yet. Use `add product` to start."); return; }
+                let productList = "📦 *Your Product Catalog*\n\n";
+                products.forEach(p => { productList += `*${p.name}* - ₦${p.price.toLocaleString()}\n`; });
+                await sendMessageWithDelay(msg, productList);
+                return;
+            }
+            if (lowerCaseText === 'format') {
+                userStates.set(senderId, { state: 'awaiting_format_choice' });
+                const formatMessage = `What format would you like your receipts in?\n\n*1.* Image (PNG) - _Good for sharing_\n*2.* Document (PDF) - _Best for printing & official records_`;
+                await sendMessageWithDelay(msg, formatMessage);
+                return;
+            }
+            if (lowerCaseText === 'mybrand') {
+                const brandMessage = `*Your Brand Settings*\n\nWhat would you like to update?\n*1.* Brand Name\n*2.* Brand Color\n*3.* Logo\n*4.* Address\n*5.* Contact Info`;
+                userStates.set(senderId, { state: 'awaiting_mybrand_choice' });
+                await sendMessageWithDelay(msg, brandMessage);
+                return;
+            }
         }
         
         // --- STATE-BASED CONVERSATIONS ---
@@ -804,7 +787,11 @@ async function generateAndSendFinalReceipt(senderId, user, receiptData, msg, isR
 
     } catch(err) {
         console.error("Error during receipt generation:", err);
-        if (page) await page.close();
+        // We only send this generic message if the specific page load error didn't already send one.
+        if (page && !page.isClosed()) {
+             await sendMessageWithDelay(msg, "Sorry, something went wrong while creating your receipt image. Please try again.");
+             await page.close();
+        }
         userStates.delete(senderId);
     }
 }
