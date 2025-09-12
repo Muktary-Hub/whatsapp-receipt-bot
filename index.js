@@ -28,7 +28,6 @@ const ADMIN_NUMBERS = ['+2347030748393@c.us', '2347016370067@c.us'];
 // --- Database, State, and Web Server ---
 let db;
 const app = express();
-// FIX: Use express.raw for webhook signature verification
 app.use(express.json({
     verify: (req, res, buf) => {
         req.rawBody = buf;
@@ -37,7 +36,7 @@ app.use(express.json({
 const corsOptions = { origin: ['http://smartnaijaservices.com.ng', 'https://smartnaijaservices.com.ng'] };
 app.use(cors(corsOptions));
 let client;
-const processingUsers = new Set(); // FIX #4: In-memory lock to prevent race conditions
+const processingUsers = new Set(); 
 
 // --- Database Connection ---
 async function connectToDB() {
@@ -122,10 +121,12 @@ async function generateVirtualAccount(user) {
 app.get('/', (req, res) => res.status(200).send('SmartReceipt Bot Webhook Server is running.'));
 
 app.post('/webhook', async (req, res) => {
-    // Webhook security should be implemented here if PaymentPoint provides signatures
     try {
         console.log("Webhook received from PaymentPoint!");
         const data = req.body;
+        // THIS IS THE DIAGNOSTIC LINE
+        console.log("Full Webhook Body:", JSON.stringify(data, null, 2)); 
+
         if (data && data.customer && data.customer.customer_phone_number) {
             let phone = data.customer.customer_phone_number;
             if (phone.startsWith('0') && phone.length === 11) { phone = '234' + phone.substring(1); }
@@ -191,14 +192,13 @@ client.on('ready', () => console.log('WhatsApp client is ready!'));
 
 // --- Main Message Handling Logic ---
 const commands = ['new receipt', 'changereceipt', 'stats', 'history', 'edit', 'export', 'add product', 'products', 'format', 'mybrand', 'cancel', 'commands'];
-const premiumCommands = ['new receipt', 'edit', 'export']; // Commands that require subscription
+const premiumCommands = ['new receipt', 'edit', 'export']; 
 
 client.on('message', async msg => {
     const senderId = msg.from;
     
-    // FIX #4: Prevent race conditions by processing one message at a time per user
     if (processingUsers.has(senderId)) {
-        return; // Ignore message if one is already being processed for this user
+        return; 
     }
     processingUsers.add(senderId);
 
@@ -212,7 +212,6 @@ client.on('message', async msg => {
         const userSession = await db.collection('conversations').findOne({ userId: senderId });
         const currentState = userSession ? userSession.state : null;
         
-        // RESTRUCTURED LOGIC: Prioritize commands to allow users to break out of conversations
         const isCommand = commands.includes(lowerCaseText) || lowerCaseText.startsWith('remove product');
 
         if (isCommand) {
@@ -225,7 +224,6 @@ client.on('message', async msg => {
                 return;
             }
 
-            // FIX #1: Implement Paywall/Free Trial Limit Check
             const subscriptionActive = isSubscriptionActive(user);
             if (!subscriptionActive && premiumCommands.includes(lowerCaseText) && user.receiptCount >= FREE_TRIAL_LIMIT) {
                 await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'awaiting_payment_decision' } }, { upsert: true });
@@ -321,7 +319,6 @@ client.on('message', async msg => {
                 await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'awaiting_mybrand_choice', userId: senderId } }, { upsert: true });
                 await sendMessageWithDelay(msg, brandMessage);
             } else if (lowerCaseText === 'cancel') {
-                // The conversation was already deleted above, so we just send a confirmation.
                 await sendMessageWithDelay(msg, "Action cancelled.");
             } else if (lowerCaseText === 'commands') {
                 const commandsList = "Here are the available commands:\n\n" +
@@ -343,9 +340,6 @@ client.on('message', async msg => {
             }
 
         } else if (currentState) {
-            // --- STATE-BASED CONVERSATIONS (if not a command)---
-            // (The entire switch block from your original code goes here, unchanged)
-            // ... [I've collapsed this for brevity, it's the same as your original switch(currentState) block]
             switch (currentState) {
                 case 'awaiting_mybrand_choice': {
                     const choice = parseInt(text, 10);
@@ -463,7 +457,7 @@ client.on('message', async msg => {
                         await generateAndSendFinalReceipt(senderId, user, selectedReceipt, msg, true);
                     } else {
                         await sendMessageWithDelay(msg, "Invalid number. Please reply with a number from the list (1-5).");
-                        await db.collection('conversations').deleteOne({ userId: senderId }); // End conversation on invalid choice
+                        await db.collection('conversations').deleteOne({ userId: senderId }); 
                     }
                     break;
                 }
@@ -653,7 +647,6 @@ client.on('message', async msg => {
                 }
                 case 'receipt_payment_method': {
                     userSession.data.receiptData.paymentMethod = text;
-                     // FIX #6: Removed inefficient DB call here, using the 'user' object from the top of the handler
                     if (!user.receiptFormat) {
                         await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'awaiting_initial_format_choice', 'data.receiptData': userSession.data.receiptData } });
                         const formatMessage = `Payment method saved.\n\nOne last thing for your first receipt! What's your preferred format?\n\n*1. Image (PNG)*\n_Good for quick sharing. A standard receipt size._\n\n*2. Document (PDF)*\n_Best for official records or if you sell many items that need a longer receipt._\n\nPlease reply with *1* or *2*.`;
@@ -683,19 +676,16 @@ client.on('message', async msg => {
             }
         
         } else {
-            // --- Fallback for non-command, non-state messages ---
             if (!user) {
                 await sendMessageWithDelay(msg, "👋 Welcome to SmartReceipt!\n\nLet's get you set up. First, what is your business name?");
                 await db.collection('conversations').insertOne({ userId: senderId, state: 'awaiting_brand_name', data: {} });
             } else {
-                // FIX #7: Improved "Welcome Back" message to be less repetitive
                 await sendMessageWithDelay(msg, `Hi ${user.brandName}!\n\nHow can I help you today? Type *'commands'* to see all available options.`);
             }
         }
     } catch (err) {
         console.error("An error occurred in message handler:", err);
     } finally {
-        // FIX #4: Always release the user lock
         processingUsers.delete(senderId);
     }
 });
@@ -736,7 +726,6 @@ async function generateAndSendFinalReceipt(senderId, user, receiptData, msg, isR
     
     let page;
     try {
-        // FIX #2: Move page creation inside the try block
         page = await client.pupBrowser.newPage();
         const response = await page.goto(fullUrl, { waitUntil: 'networkidle0' });
         
@@ -766,7 +755,6 @@ async function generateAndSendFinalReceipt(senderId, user, receiptData, msg, isR
         const caption = `Here is the receipt for ${receiptData.customerName}.`;
         await client.sendMessage(senderId, media, { caption: caption });
         
-        // This logic is now separate from the paywall check, which happens before generation
         if (!isResend && !isEdit) {
             await db.collection('users').updateOne({ userId: senderId }, { $inc: { receiptCount: 1 } });
         }
@@ -782,7 +770,6 @@ async function generateAndSendFinalReceipt(senderId, user, receiptData, msg, isR
         await sendMessageWithDelay(msg, "Sorry, a technical error occurred while generating the receipt file. Please try again later.");
     }
 }
-
 
 // --- Main Function ---
 async function startBot() {
