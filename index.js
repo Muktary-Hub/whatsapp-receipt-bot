@@ -23,7 +23,7 @@ const PP_BUSINESS_ID = process.env.PP_BUSINESS_ID;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const PORT = 3000;
 const DB_NAME = 'receiptBot';
-const ADMIN_NUMBERS = ['2348146817448@c.us', '2347016370067@c.us'];
+const ADMIN_NUMBERS = ['+2347030748393@c.us', '2347016370067@c.us'];
 
 // --- Database, State, and Web Server ---
 let db;
