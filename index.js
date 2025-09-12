@@ -23,7 +23,7 @@ const PP_BUSINESS_ID = process.env.PP_BUSINESS_ID;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const PORT = 3000;
 const DB_NAME = 'receiptBot';
-const ADMIN_NUMBERS = ['2348146817449@c.us', '2347016370067@c.us'];
+const ADMIN_NUMBERS = ['2348146817448@c.us', '2347016370067@c.us'];
 
 // --- Database, State, and Web Server ---
 let db;
@@ -541,6 +541,11 @@ client.on('message', async msg => {
             return; // IMPORTANT: End execution if a state was handled
         }
         
+        // --- COMMAND-BASED TRIGGERS ---
+        // Define the trigger for command words
+        const commands = ['new receipt', 'changereceipt', 'stats', 'history', 'edit', 'export', 'add product', 'products', 'format', 'mybrand'];
+        const commandTrigger = commands.includes(lowerCaseText) || lowerCaseText.startsWith('remove product');
+
         if (commandTrigger) {
             if (lowerCaseText === 'new receipt') {
                 await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'receipt_customer_name', userId: senderId, data: { receiptData: {} } } }, { upsert: true });
