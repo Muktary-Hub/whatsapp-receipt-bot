@@ -52,6 +52,13 @@ function sendMessageWithDelay(msg, text) {
     return new Promise(resolve => setTimeout(() => msg.reply(text).then(resolve), delay));
 }
 
+function isSubscriptionActive(user) {
+    if (!user || !user.isPaid || !user.subscriptionExpiryDate) {
+        return false;
+    }
+    return new Date() < new Date(user.subscriptionExpiryDate);
+}
+
 async function uploadLogo(media) {
     try {
         const imageBuffer = Buffer.from(media.data, 'base64');
@@ -115,10 +122,18 @@ app.post('/webhook', async (req, res) => {
             if (phone.startsWith('0') && phone.length === 11) { phone = '234' + phone.substring(1); }
             const userId = `${phone}@c.us`;
             console.log(`Payment received for user: ${userId}`);
-            const result = await db.collection('users').updateOne({ userId: userId }, { $set: { isPaid: true } });
+            
+            const expiryDate = new Date();
+            expiryDate.setFullYear(expiryDate.getFullYear() + 1);
+
+            const result = await db.collection('users').updateOne(
+                { userId: userId }, 
+                { $set: { isPaid: true, subscriptionExpiryDate: expiryDate } }
+            );
+
             if (result.modifiedCount > 0) {
-                console.log(`User ${userId} unlocked successfully.`);
-                await client.sendMessage(userId, `✅ *Payment Confirmed!* Thank you.\n\nYour SmartReceipt account now has lifetime access to unlimited receipts.`);
+                console.log(`User ${userId} unlocked successfully until ${expiryDate.toLocaleDateString()}.`);
+                await client.sendMessage(userId, `✅ *Payment Confirmed!* Thank you.\n\nYour SmartReceipt subscription is now active until ${expiryDate.toLocaleDateString('en-NG', { year: 'numeric', month: 'long', day: 'numeric' })}.`);
             }
         }
         res.status(200).send('Webhook processed');
@@ -177,6 +192,8 @@ client.on('message', async msg => {
         
         let user = await db.collection('users').findOne({ userId: senderId });
         const isAdmin = ADMIN_NUMBERS.includes(senderId);
+        const subscriptionActive = isAdmin || isSubscriptionActive(user);
+
         const userSession = userStates.get(senderId) || {};
         const currentState = userSession.state;
 
@@ -282,18 +299,14 @@ client.on('message', async msg => {
             return;
         }
 
-        // --- ✨ BUG FIX: SECURE THE EDIT COMMAND ✨ ---
         if (lowerCaseText === 'edit') {
             if (!user || !user.onboardingComplete) { await sendMessageWithDelay(msg, "Please complete your setup first."); return; }
-            
-            // PAYWALL CHECK
-            if (!isAdmin && !user.isPaid && user.receiptCount >= FREE_TRIAL_LIMIT) {
+            if (!subscriptionActive && user.receiptCount >= FREE_TRIAL_LIMIT) {
                 userStates.set(senderId, { state: 'awaiting_payment_decision' });
                 const paywallMessage = `Dear *${user.brandName}*,\n\nYou have reached your free trial limit. To edit receipts or create new ones, please subscribe for just *₦${YEARLY_FEE.toLocaleString()} per year*.\n\nWould you like to subscribe?\n\n(Please reply *Yes* or *No*)`;
                 await sendMessageWithDelay(msg, paywallMessage);
                 return;
             }
-
             const lastReceipt = await db.collection('receipts').findOne({ userId: senderId }, { sort: { createdAt: -1 } });
             if (!lastReceipt) { await sendMessageWithDelay(msg, "You don't have any recent receipts to edit."); return; }
             const editMessage = `Let's edit your last receipt (for *${lastReceipt.customerName}*).\n\nWhat would you like to change?\n*1.* Customer Name\n*2.* Items & Prices\n*3.* Payment Method`;
@@ -337,9 +350,11 @@ client.on('message', async msg => {
             return;
         }
 
-        if (lowerCaseText === 'new receipt' && user && !isAdmin && !user.isPaid && user.receiptCount >= FREE_TRIAL_LIMIT) {
+        if (lowerCaseText === 'new receipt' && user && !subscriptionActive && user.receiptCount >= FREE_TRIAL_LIMIT) {
             userStates.set(senderId, { state: 'awaiting_payment_decision' });
-            const paywallMessage = `Dear *${user.brandName}*,\n\nYou have reached your limit of ${FREE_TRIAL_LIMIT} free receipts. To help us keep growing and adding more great features, we ask our users to subscribe for just *₦${YEARLY_FEE.toLocaleString()} per year*.\n\nThis will give you unlimited receipts and full access to all features. Would you like to subscribe?\n\n(Please reply *Yes* or *No*)`;
+            const paywallMessage = user.subscriptionExpiryDate
+                ? `Dear *${user.brandName}*,\n\nYour yearly subscription has expired. To continue creating unlimited receipts, you need to renew.\n\nWould you like to renew your subscription for *₦${YEARLY_FEE.toLocaleString()}* for another year?\n\n(Please reply *Yes* or *No*)`
+                : `Dear *${user.brandName}*,\n\nYou have reached your limit of ${FREE_TRIAL_LIMIT} free receipts. Would you like to subscribe for just *₦${YEARLY_FEE.toLocaleString()} per year*?\n\n(Please reply *Yes* or *No*)`;
             await sendMessageWithDelay(msg, paywallMessage);
             return;
         }
@@ -408,8 +423,8 @@ client.on('message', async msg => {
                 const fullContactText = text;
                 let contactEmail = null;
                 let contactPhone = null;
-                const emailMatch = fullContactText.match(/\S+@\S+\.\S+/);
-                if (emailMatch) { contactEmail = emailMatch[0]; }
+                const emailMatchUpdate = fullContactText.match(/\S+@\S+\.\S+/);
+                if (emailMatchUpdate) { contactEmail = emailMatchUpdate[0]; }
                 const phoneText = fullContactText.replace(contactEmail || '', '').trim();
                 if (phoneText.match(/(\+)?\d+/)) { contactPhone = phoneText; }
                 await db.collection('users').updateOne({ userId: senderId }, { $set: { contactInfo: text, contactEmail: contactEmail, contactPhone: contactPhone } });
@@ -513,8 +528,8 @@ client.on('message', async msg => {
                 const fullContactText = text;
                 let contactEmail = null;
                 let contactPhone = null;
-                const emailMatch = fullContactText.match(/\S+@\S+\.\S+/);
-                if (emailMatch) { contactEmail = emailMatch[0]; }
+                const emailMatchOnboard = fullContactText.match(/\S+@\S+\.\S+/);
+                if (emailMatchOnboard) { contactEmail = emailMatchOnboard[0]; }
                 const phoneText = fullContactText.replace(contactEmail || '', '').trim();
                 if (phoneText.match(/(\+)?\d+/)) { contactPhone = phoneText; }
                 await db.collection('users').updateOne({ userId: senderId }, { $set: { contactInfo: text, contactEmail: contactEmail, contactPhone: contactPhone, onboardingComplete: true } });
@@ -764,7 +779,7 @@ async function generateAndSendFinalReceipt(senderId, user, receiptData, msg, isR
         await client.sendMessage(senderId, media, { caption: caption });
         
         const userAfterReceipt = await db.collection('users').findOne({ userId: senderId });
-        if (!isResend && !isEdit && !isAdmin && !userAfterReceipt.isPaid) {
+        if (!isResend && !isEdit && !isAdmin && !isSubscriptionActive(userAfterReceipt)) {
             const newReceiptCount = (userAfterReceipt.receiptCount || 0) + 1;
             await db.collection('users').updateOne({ userId: senderId }, { $set: { receiptCount: newReceiptCount } });
             if (newReceiptCount >= FREE_TRIAL_LIMIT) {
@@ -777,7 +792,6 @@ async function generateAndSendFinalReceipt(senderId, user, receiptData, msg, isR
 
     } catch(err) {
         console.error("Error during receipt generation:", err);
-        await sendMessageWithDelay(msg, "Sorry, something went wrong while creating your receipt image. Please try again.");
         if (page) await page.close();
         userStates.delete(senderId);
     }
