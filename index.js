@@ -11,6 +11,7 @@ const crypto = require('crypto');
 // --- BUSINESS MODEL ---
 const YEARLY_FEE = 2000;
 const FREE_TRIAL_LIMIT = 3;
+const FREE_EDIT_LIMIT = 2;
 
 // --- Configuration ---
 const MONGO_URI = process.env.MONGO_URI;
@@ -22,7 +23,7 @@ const PP_BUSINESS_ID = process.env.PP_BUSINESS_ID;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const PORT = 3000;
 const DB_NAME = 'receiptBot';
-const ADMIN_NUMBERS = ['2348146817442@c.us', '2347016370067@c.us'];
+const ADMIN_NUMBERS = ['2348146817443@c.us', '2347016370067@c.us'];
 
 // --- Database, State, and Web Server ---
 let db;
@@ -53,7 +54,8 @@ function sendMessageWithDelay(msg, text) {
 }
 
 function isSubscriptionActive(user) {
-    if (!user || !user.isPaid || !user.subscriptionExpiryDate) {
+    if (!user) return false;
+    if (!user.isPaid || !user.subscriptionExpiryDate) {
         return false;
     }
     return new Date() < new Date(user.subscriptionExpiryDate);
@@ -310,7 +312,7 @@ client.on('message', async msg => {
             const lastReceipt = await db.collection('receipts').findOne({ userId: senderId }, { sort: { createdAt: -1 } });
             if (!lastReceipt) { await sendMessageWithDelay(msg, "You don't have any recent receipts to edit."); return; }
             const editMessage = `Let's edit your last receipt (for *${lastReceipt.customerName}*).\n\nWhat would you like to change?\n*1.* Customer Name\n*2.* Items & Prices\n*3.* Payment Method`;
-            userStates.set(senderId, { state: 'awaiting_edit_choice', receiptToEdit: lastReceipt });
+            userStates.set(senderId, { state: 'awaiting_edit_choice', receiptToEdit: lastReceipt, editCount: 0 });
             await sendMessageWithDelay(msg, editMessage);
             return;
         }
@@ -434,6 +436,11 @@ client.on('message', async msg => {
             }
 
             case 'awaiting_edit_choice': {
+                if (!subscriptionActive && userSession.editCount >= FREE_EDIT_LIMIT) {
+                    userStates.set(senderId, { state: 'awaiting_payment_decision' });
+                    await sendMessageWithDelay(msg, `You have reached the edit limit for this receipt. To make unlimited edits and create unlimited receipts, please subscribe.`);
+                    return;
+                }
                 const editChoice = parseInt(text, 10);
                 if (editChoice === 1) { userSession.state = 'editing_customer_name'; await sendMessageWithDelay(msg, 'What is the new customer name?'); }
                 else if (editChoice === 2) { userSession.state = 'editing_items'; await sendMessageWithDelay(msg, 'Please re-enter all items, separated by commas.'); }
@@ -444,6 +451,7 @@ client.on('message', async msg => {
             }
             case 'editing_customer_name': {
                 userSession.receiptToEdit.customerName = text;
+                userSession.editCount = (userSession.editCount || 0) + 1;
                 await generateAndSendFinalReceipt(senderId, user, userSession.receiptToEdit, msg, false, true);
                 break;
             }
@@ -461,11 +469,13 @@ client.on('message', async msg => {
                     userStates.delete(senderId);
                     return;
                 }
+                userSession.editCount = (userSession.editCount || 0) + 1;
                 await generateAndSendFinalReceipt(senderId, user, userSession.receiptToEdit, msg, false, true);
                 break;
             }
             case 'editing_payment_method': {
                 userSession.receiptToEdit.paymentMethod = text;
+                userSession.editCount = (userSession.editCount || 0) + 1;
                 await generateAndSendFinalReceipt(senderId, user, userSession.receiptToEdit, msg, false, true);
                 break;
             }
@@ -715,6 +725,7 @@ client.on('message', async msg => {
 
 // --- GENERATION & REGENERATION FUNCTION ---
 async function generateAndSendFinalReceipt(senderId, user, receiptData, msg, isResend = false, isEdit = false) {
+    const isAdmin = ADMIN_NUMBERS.includes(senderId);
     const message = isEdit ? 'Regenerating your updated receipt...' : (isResend ? 'Generating your receipt...' : 'Generating your receipt...');
     await sendMessageWithDelay(msg, `✅ Got it! ${message}`);
 
@@ -755,7 +766,7 @@ async function generateAndSendFinalReceipt(senderId, user, receiptData, msg, isR
         if (!response.ok()) {
             console.error(`Failed to load receipt page: ${response.status()} for URL: ${fullUrl}`);
             await sendMessageWithDelay(msg, `Sorry, there was an error preparing your receipt template. Please check your template files or contact support.`);
-            await page.close();
+            if (page) await page.close();
             userStates.delete(senderId);
             return;
         }
@@ -787,8 +798,9 @@ async function generateAndSendFinalReceipt(senderId, user, receiptData, msg, isR
                 const paywallMessage = `Dear *${user.brandName}*,\n\nYou have reached your limit of ${FREE_TRIAL_LIMIT} free receipts. To help us keep growing and adding more great features, we ask our users to subscribe for just *₦${YEARLY_FEE.toLocaleString()} per year*.\n\nThis will give you unlimited receipts and full access to all features. Would you like to subscribe?\n\n(Please reply *Yes* or *No*)`;
                 await sendMessageWithDelay(msg, paywallMessage);
             }
+        } else {
+             userStates.delete(senderId);
         }
-        userStates.delete(senderId);
 
     } catch(err) {
         console.error("Error during receipt generation:", err);
