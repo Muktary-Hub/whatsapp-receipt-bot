@@ -23,7 +23,7 @@ const PP_BUSINESS_ID = process.env.PP_BUSINESS_ID;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const PORT = 3000;
 const DB_NAME = 'receiptBot';
-const ADMIN_NUMBERS = ['+2347030748393@c.us', '2347016370067@c.us'];
+const ADMIN_NUMBERS = ['+2348146817448@c.us', '2347016370067@c.us'];
 
 // --- Database, State, and Web Server ---
 let db;
@@ -124,14 +124,20 @@ app.post('/webhook', async (req, res) => {
     try {
         console.log("Webhook received from PaymentPoint!");
         const data = req.body;
-        // THIS IS THE DIAGNOSTIC LINE
-        console.log("Full Webhook Body:", JSON.stringify(data, null, 2)); 
+        // You can remove the line below later if you want to clean up your logs
+        console.log("Full Webhook Body:", JSON.stringify(data, null, 2));
 
-        if (data && data.customer && data.customer.customer_phone_number) {
-            let phone = data.customer.customer_phone_number;
-            if (phone.startsWith('0') && phone.length === 11) { phone = '234' + phone.substring(1); }
+        // --- THE FIX ---
+        // We now check for the email field instead of a phone number field.
+        if (data && data.customer && data.customer.email) {
+            // Extract the phone number from the email address string.
+            let phone = data.customer.email.split('@')[0];
+            
+            if (phone.startsWith('0') && phone.length === 11) { 
+                phone = '234' + phone.substring(1); 
+            }
             const userId = `${phone}@c.us`;
-            console.log(`Payment received for user: ${userId}`);
+            console.log(`Payment successfully matched to user: ${userId}`);
             
             const expiryDate = new Date();
             expiryDate.setFullYear(expiryDate.getFullYear() + 1);
@@ -144,14 +150,18 @@ app.post('/webhook', async (req, res) => {
             if (result.modifiedCount > 0) {
                 console.log(`User ${userId} unlocked successfully until ${expiryDate.toLocaleDateString()}.`);
                 await client.sendMessage(userId, `✅ *Payment Confirmed!* Thank you.\n\nYour SmartReceipt subscription is now active until ${expiryDate.toLocaleDateString('en-NG', { year: 'numeric', month: 'long', day: 'numeric' })}.`);
+            } else {
+                 console.log(`Webhook processed, but no user found in DB with ID: ${userId}`);
             }
         }
+        
         res.status(200).send('Webhook processed');
     } catch (error) {
         console.error("Error processing webhook:", error);
         res.status(500).send('Error processing webhook');
     }
 });
+
 
 app.post('/admin-data', async (req, res) => {
     try {
