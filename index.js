@@ -23,7 +23,7 @@ const PP_BUSINESS_ID = process.env.PP_BUSINESS_ID;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const PORT = 3000;
 const DB_NAME = 'receiptBot';
-const ADMIN_NUMBERS = ['2348146817442@c.us', '2347016370067@c.us'];
+const ADMIN_NUMBERS = ['2348146817443@c.us', '2347016370067@c.us'];
 
 // --- Database, State, and Web Server ---
 let db;
@@ -196,25 +196,6 @@ client.on('message', async msg => {
         const userSession = await db.collection('conversations').findOne({ userId: senderId });
         const currentState = userSession ? userSession.state : null;
 
-        // --- THE MASTER SECURITY GUARD ---
-        const protectedCommands = ['new receipt', 'stats', 'history', 'edit', 'export', 'products', 'add product', 'remove product', 'format', 'mybrand', 'changereceipt'];
-        const commandTrigger = protectedCommands.find(cmd => lowerCaseText.startsWith(cmd));
-
-        if (commandTrigger && !currentState) {
-            if (!user || !user.onboardingComplete) {
-                await sendMessageWithDelay(msg, "You must complete your brand setup first. Please send 'Hi' to get started.");
-                return;
-            }
-            if (!subscriptionActive && user.receiptCount >= FREE_TRIAL_LIMIT) {
-                await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'awaiting_payment_decision', userId: senderId } }, { upsert: true });
-                const paywallMessage = user.subscriptionExpiryDate
-                    ? `Dear *${user.brandName}*,\n\nYour yearly subscription has expired. To continue using SmartReceipt, you need to renew.\n\nWould you like to renew your subscription for *₦${YEARLY_FEE.toLocaleString()}* for another year?\n\n(Please reply *Yes* or *No*)`
-                    : `Dear *${user.brandName}*,\n\nYou have reached your limit of ${FREE_TRIAL_LIMIT} free receipts. Would you like to subscribe for just *₦${YEARLY_FEE.toLocaleString()} per year*?\n\n(Please reply *Yes* or *No*)`;
-                await sendMessageWithDelay(msg, paywallMessage);
-                return;
-            }
-        }
-        
         // --- STATE-BASED CONVERSATIONS ---
         if (currentState) {
             switch (currentState) {
@@ -527,8 +508,8 @@ client.on('message', async msg => {
                     break;
                 }
                 case 'receipt_payment_method': {
-                    const updatedUser = await db.collection('users').findOne({ userId: senderId });
                     userSession.data.receiptData.paymentMethod = text;
+                    const updatedUser = await db.collection('users').findOne({ userId: senderId });
                     if (!updatedUser.receiptFormat) {
                         await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'awaiting_initial_format_choice', 'data.receiptData': userSession.data.receiptData } });
                         const formatMessage = `Payment method saved.\n\nOne last thing for your first receipt! What's your preferred format?\n\n*1. Image (PNG)*\n_Good for quick sharing. A standard receipt size._\n\n*2. Document (PDF)*\n_Best for official records or if you sell many items that need a longer receipt._\n\nPlease reply with *1* or *2*.`;
@@ -557,39 +538,14 @@ client.on('message', async msg => {
                 }
             }
         } else if (commandTrigger) {
-            if (lowerCaseText === 'commands') {} // Already handled
-            else if (lowerCaseText === 'backup') {} // Already handled
-            else if (lowerCaseText.startsWith('restore')) {} // Already handled
-            else if (lowerCaseText === 'add product') {
-                await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'adding_product_name', userId: senderId } }, { upsert: true });
-                await sendMessageWithDelay(msg, "Let's add a new product. What is the product's name?");
-            }
-            else if (lowerCaseText.startsWith('remove product')) {
-                const productName = text.substring(14).trim().replace(/"/g, '');
-                if(productName) {
-                    const result = await db.collection('products').deleteOne({ userId: senderId, name: { $regex: new RegExp(`^${productName}$`, 'i') } });
-                    if(result.deletedCount > 0) { await sendMessageWithDelay(msg, `🗑️ Product "*${productName}*" has been removed.`); }
-                    else { await sendMessageWithDelay(msg, `Could not find a product named "*${productName}*".`); }
-                } else { await sendMessageWithDelay(msg, 'Invalid format. Please use: `remove product "Product Name"`'); }
-            }
-            else if (lowerCaseText === 'products') {
-                const products = await db.collection('products').find({ userId: senderId }).sort({name: 1}).toArray();
-                if(products.length === 0) { await sendMessageWithDelay(msg, "You haven't added any products to your catalog yet. Use `add product` to start."); return; }
-                let productList = "📦 *Your Product Catalog*\n\n";
-                products.forEach(p => { productList += `*${p.name}* - ₦${p.price.toLocaleString()}\n`; });
-                await sendMessageWithDelay(msg, productList);
-            }
-            else if (lowerCaseText === 'format') {
-                await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'awaiting_format_choice', userId: senderId } }, { upsert: true });
-                const formatMessage = `What format would you like your receipts in?\n\n*1.* Image (PNG) - _Good for sharing_\n*2.* Document (PDF) - _Best for printing & official records_`;
-                await sendMessageWithDelay(msg, formatMessage);
-            }
-            else if (lowerCaseText === 'mybrand') {
-                const brandMessage = `*Your Brand Settings*\n\nWhat would you like to update?\n*1.* Brand Name\n*2.* Brand Color\n*3.* Logo\n*4.* Address\n*5.* Contact Info`;
-                await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'awaiting_mybrand_choice', userId: senderId } }, { upsert: true });
-                await sendMessageWithDelay(msg, brandMessage);
-            }
-            else if (lowerCaseText === 'stats') {
+            // This block handles the direct execution of commands
+            if (lowerCaseText === 'new receipt') {
+                await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'receipt_customer_name', userId: senderId, data: { receiptData: {} } } }, { upsert: true });
+                await sendMessageWithDelay(msg, '🧾 *New Receipt Started*\n\nWho is the customer?');
+            } else if (lowerCaseText === 'changereceipt') {
+                await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'awaiting_template_choice', userId: senderId } }, { upsert: true });
+                await sendMessageWithDelay(msg, "Please choose your new receipt template.\n\nView our 6 high-class designs in the catalog, then send the number of your choice (1-6).");
+            } else if (lowerCaseText === 'stats') {
                 const now = new Date();
                 const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
                 const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
@@ -599,8 +555,7 @@ client.on('message', async msg => {
                 const monthName = startOfMonth.toLocaleString('default', { month: 'long' });
                 let statsMessage = `📊 *Your Stats for ${monthName}*\n\n*Receipts Generated:* ${receiptCount}\n*Total Sales:* ₦${totalSales.toLocaleString()}`;
                 await sendMessageWithDelay(msg, statsMessage);
-            }
-            else if (lowerCaseText === 'history') {
+            } else if (lowerCaseText === 'history') {
                 const recentReceipts = await db.collection('receipts').find({ userId: senderId }).sort({ createdAt: -1 }).limit(5).toArray();
                 if (recentReceipts.length === 0) { await sendMessageWithDelay(msg, "You haven't generated any receipts yet."); return; }
                 let historyMessage = "🧾 *Your 5 Most Recent Receipts:*\n\n";
@@ -608,15 +563,13 @@ client.on('message', async msg => {
                 historyMessage += "\nTo resend a receipt, just reply with its number (1-5).";
                 await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'awaiting_history_choice', userId: senderId, data: { history: recentReceipts } } }, { upsert: true });
                 await sendMessageWithDelay(msg, historyMessage);
-            }
-            else if (lowerCaseText === 'edit') {
+            } else if (lowerCaseText === 'edit') {
                 const lastReceipt = await db.collection('receipts').findOne({ userId: senderId }, { sort: { createdAt: -1 } });
                 if (!lastReceipt) { await sendMessageWithDelay(msg, "You don't have any recent receipts to edit."); return; }
                 const editMessage = `Let's edit your last receipt (for *${lastReceipt.customerName}*).\n\nWhat would you like to change?\n*1.* Customer Name\n*2.* Items & Prices\n*3.* Payment Method`;
                 await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'awaiting_edit_choice', userId: senderId, data: { receiptToEdit: lastReceipt, editCount: 0 } } }, { upsert: true });
                 await sendMessageWithDelay(msg, editMessage);
-            }
-            else if (lowerCaseText === 'export') {
+            } else if (lowerCaseText === 'export') {
                 await sendMessageWithDelay(msg, "Gathering your data for this month. Please wait a moment...");
                 const now = new Date();
                 const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -648,13 +601,34 @@ client.on('message', async msg => {
                 const media = new MessageMedia('text/plain', buffer.toString('base64'), `SmartReceipt_Export_${monthName}.txt`);
                 await client.sendMessage(senderId, media, { caption: `Here is your sales data for ${monthName}.` });
             }
-            else if (lowerCaseText === 'changereceipt') {
-                 await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'awaiting_template_choice', userId: senderId } }, { upsert: true });
-                await sendMessageWithDelay(msg, "Please choose your new receipt template.\n\nView our 6 high-class designs in the catalog, then send the number of your choice (1-6).");
+             else if (lowerCaseText === 'add product') {
+                await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'adding_product_name', userId: senderId } }, { upsert: true });
+                await sendMessageWithDelay(msg, "Let's add a new product. What is the product's name?");
             }
-             else if (lowerCaseText === 'new receipt') {
-                await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'receipt_customer_name', userId: senderId, data: { receiptData: {} } } }, { upsert: true });
-                await sendMessageWithDelay(msg, '🧾 *New Receipt Started*\n\nWho is the customer?');
+            else if (lowerCaseText.startsWith('remove product')) {
+                const productName = text.substring(14).trim().replace(/"/g, '');
+                if(productName) {
+                    const result = await db.collection('products').deleteOne({ userId: senderId, name: { $regex: new RegExp(`^${productName}$`, 'i') } });
+                    if(result.deletedCount > 0) { await sendMessageWithDelay(msg, `🗑️ Product "*${productName}*" has been removed.`); }
+                    else { await sendMessageWithDelay(msg, `Could not find a product named "*${productName}*".`); }
+                } else { await sendMessageWithDelay(msg, 'Invalid format. Please use: `remove product "Product Name"`'); }
+            }
+            else if (lowerCaseText === 'products') {
+                const products = await db.collection('products').find({ userId: senderId }).sort({name: 1}).toArray();
+                if(products.length === 0) { await sendMessageWithDelay(msg, "You haven't added any products to your catalog yet. Use `add product` to start."); return; }
+                let productList = "📦 *Your Product Catalog*\n\n";
+                products.forEach(p => { productList += `*${p.name}* - ₦${p.price.toLocaleString()}\n`; });
+                await sendMessageWithDelay(msg, productList);
+            }
+            else if (lowerCaseText === 'format') {
+                await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'awaiting_format_choice', userId: senderId } }, { upsert: true });
+                const formatMessage = `What format would you like your receipts in?\n\n*1.* Image (PNG) - _Good for sharing_\n*2.* Document (PDF) - _Best for printing & official records_`;
+                await sendMessageWithDelay(msg, formatMessage);
+            }
+            else if (lowerCaseText === 'mybrand') {
+                const brandMessage = `*Your Brand Settings*\n\nWhat would you like to update?\n*1.* Brand Name\n*2.* Brand Color\n*3.* Logo\n*4.* Address\n*5.* Contact Info`;
+                await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'awaiting_mybrand_choice', userId: senderId } }, { upsert: true });
+                await sendMessageWithDelay(msg, brandMessage);
             }
         } else {
              const existingUser = await db.collection('users').findOne({ userId: senderId });
@@ -752,7 +726,7 @@ async function generateAndSendFinalReceipt(senderId, user, receiptData, msg, isR
     } catch(err) {
         console.error("Error during receipt generation:", err);
         if (page && !page.isClosed()) {
-             await sendMessageWithDelay(msg, "Sorry, something went wrong while creating your receipt image. Please try again.");
+             // We don't send a message here because the user has already been notified of the page load failure
              await page.close();
         }
         await db.collection('conversations').deleteOne({ userId: senderId });
