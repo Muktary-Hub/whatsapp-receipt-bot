@@ -23,7 +23,7 @@ const PP_BUSINESS_ID = process.env.PP_BUSINESS_ID;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const PORT = 3000;
 const DB_NAME = 'receiptBot';
-const ADMIN_NUMBERS = ['2348146817443@c.us', '2347016370067@c.us'];
+const ADMIN_NUMBERS = ['2348146817449@c.us', '2347016370067@c.us'];
 
 // --- Database, State, and Web Server ---
 let db;
@@ -196,7 +196,7 @@ client.on('message', async msg => {
         const userSession = await db.collection('conversations').findOne({ userId: senderId });
         const currentState = userSession ? userSession.state : null;
 
-        // --- STATE-BASED CONVERSATIONS ---
+        // --- STATE-BASED CONVERSATIONS (HIGHEST PRIORITY) ---
         if (currentState) {
             switch (currentState) {
                 case 'awaiting_mybrand_choice': {
@@ -259,7 +259,8 @@ client.on('message', async msg => {
                 }
 
                 case 'awaiting_edit_choice': {
-                    if (!subscriptionActive && (userSession.data.editCount || 0) >= FREE_EDIT_LIMIT) {
+                    const editCount = userSession.data.editCount || 0;
+                    if (!subscriptionActive && editCount >= FREE_EDIT_LIMIT) {
                         await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'awaiting_payment_decision' } });
                         await sendMessageWithDelay(msg, `You have reached the edit limit for this receipt. To make unlimited edits and create unlimited receipts, please subscribe.`);
                         return;
@@ -537,8 +538,10 @@ client.on('message', async msg => {
                     break;
                 }
             }
-        } else if (commandTrigger) {
-            // This block handles the direct execution of commands
+            return; // IMPORTANT: End execution if a state was handled
+        }
+        
+        if (commandTrigger) {
             if (lowerCaseText === 'new receipt') {
                 await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'receipt_customer_name', userId: senderId, data: { receiptData: {} } } }, { upsert: true });
                 await sendMessageWithDelay(msg, '🧾 *New Receipt Started*\n\nWho is the customer?');
@@ -600,43 +603,37 @@ client.on('message', async msg => {
                 const buffer = Buffer.from(fileContent, 'utf-8');
                 const media = new MessageMedia('text/plain', buffer.toString('base64'), `SmartReceipt_Export_${monthName}.txt`);
                 await client.sendMessage(senderId, media, { caption: `Here is your sales data for ${monthName}.` });
-            }
-             else if (lowerCaseText === 'add product') {
+            } else if (lowerCaseText === 'add product') {
                 await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'adding_product_name', userId: senderId } }, { upsert: true });
                 await sendMessageWithDelay(msg, "Let's add a new product. What is the product's name?");
-            }
-            else if (lowerCaseText.startsWith('remove product')) {
+            } else if (lowerCaseText.startsWith('remove product')) {
                 const productName = text.substring(14).trim().replace(/"/g, '');
                 if(productName) {
                     const result = await db.collection('products').deleteOne({ userId: senderId, name: { $regex: new RegExp(`^${productName}$`, 'i') } });
                     if(result.deletedCount > 0) { await sendMessageWithDelay(msg, `🗑️ Product "*${productName}*" has been removed.`); }
                     else { await sendMessageWithDelay(msg, `Could not find a product named "*${productName}*".`); }
                 } else { await sendMessageWithDelay(msg, 'Invalid format. Please use: `remove product "Product Name"`'); }
-            }
-            else if (lowerCaseText === 'products') {
+            } else if (lowerCaseText === 'products') {
                 const products = await db.collection('products').find({ userId: senderId }).sort({name: 1}).toArray();
                 if(products.length === 0) { await sendMessageWithDelay(msg, "You haven't added any products to your catalog yet. Use `add product` to start."); return; }
                 let productList = "📦 *Your Product Catalog*\n\n";
                 products.forEach(p => { productList += `*${p.name}* - ₦${p.price.toLocaleString()}\n`; });
                 await sendMessageWithDelay(msg, productList);
-            }
-            else if (lowerCaseText === 'format') {
+            } else if (lowerCaseText === 'format') {
                 await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'awaiting_format_choice', userId: senderId } }, { upsert: true });
                 const formatMessage = `What format would you like your receipts in?\n\n*1.* Image (PNG) - _Good for sharing_\n*2.* Document (PDF) - _Best for printing & official records_`;
                 await sendMessageWithDelay(msg, formatMessage);
-            }
-            else if (lowerCaseText === 'mybrand') {
+            } else if (lowerCaseText === 'mybrand') {
                 const brandMessage = `*Your Brand Settings*\n\nWhat would you like to update?\n*1.* Brand Name\n*2.* Brand Color\n*3.* Logo\n*4.* Address\n*5.* Contact Info`;
                 await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'awaiting_mybrand_choice', userId: senderId } }, { upsert: true });
                 await sendMessageWithDelay(msg, brandMessage);
             }
         } else {
-             const existingUser = await db.collection('users').findOne({ userId: senderId });
-            if (!existingUser || !existingUser.onboardingComplete) {
+            if (!user) {
                 await sendMessageWithDelay(msg, "👋 Welcome to SmartReceipt!\n\nLet's get you set up. First, what is your business name?");
-                await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'awaiting_brand_name', userId: senderId } }, { upsert: true });
+                await db.collection('conversations').insertOne({ userId: senderId, state: 'awaiting_brand_name', data: {} });
             } else {
-                await sendMessageWithDelay(msg, `Welcome back, ${existingUser.brandName}!\n\nType *'new receipt'* to start, or *'commands'* to see all options.`);
+                await sendMessageWithDelay(msg, `Welcome back, ${user.brandName}!\n\nType *'new receipt'* to start, or *'commands'* to see all options.`);
             }
         }
     } catch (err) {
@@ -718,6 +715,8 @@ async function generateAndSendFinalReceipt(senderId, user, receiptData, msg, isR
                 await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'awaiting_payment_decision', userId: senderId } }, { upsert: true });
                 const paywallMessage = `Dear *${user.brandName}*,\n\nYou have reached your limit of ${FREE_TRIAL_LIMIT} free receipts. To help us keep growing and adding more great features, we ask our users to subscribe for just *₦${YEARLY_FEE.toLocaleString()} per year*.\n\nThis will give you unlimited receipts and full access to all features. Would you like to subscribe?\n\n(Please reply *Yes* or *No*)`;
                 await sendMessageWithDelay(msg, paywallMessage);
+            } else {
+                await db.collection('conversations').deleteOne({ userId: senderId });
             }
         } else {
              await db.collection('conversations').deleteOne({ userId: senderId });
@@ -726,7 +725,6 @@ async function generateAndSendFinalReceipt(senderId, user, receiptData, msg, isR
     } catch(err) {
         console.error("Error during receipt generation:", err);
         if (page && !page.isClosed()) {
-             // We don't send a message here because the user has already been notified of the page load failure
              await page.close();
         }
         await db.collection('conversations').deleteOne({ userId: senderId });
