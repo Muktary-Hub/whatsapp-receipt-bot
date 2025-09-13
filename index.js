@@ -1,5 +1,5 @@
 // --- Dependencies ---
-import { Client, LocalAuth, MessageMedia } from 'whatsapp-web.js';
+import pkg from 'whatsapp-web.js'; const { Client, LocalAuth, MessageMedia } = pkg;
 import axios from 'axios';
 import FormData from 'form-data';
 import express from 'express';
