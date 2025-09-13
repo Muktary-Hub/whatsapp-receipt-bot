@@ -41,7 +41,6 @@ app.use(cors(corsOptions));
 let client;
 const processingUsers = new Set(); 
 
-// --- Helper Functions Specific to this file ---
 async function uploadLogo(media) {
     try {
         const imageBuffer = Buffer.from(media.data, 'base64');
@@ -64,7 +63,6 @@ function formatPhoneNumberForApi(whatsappId) {
     return "INVALID_PHONE_FORMAT"; 
 }
 
-// --- PAYMENTPOINT INTEGRATION ---
 async function generateVirtualAccount(user) {
     const formattedPhone = formatPhoneNumberForApi(user.userId);
     if (formattedPhone === "INVALID_PHONE_FORMAT") { console.error(`Could not format phone number for user: ${user.userId}`); return null; }
@@ -87,7 +85,6 @@ async function generateVirtualAccount(user) {
     }
 }
 
-// --- WEB SERVER ROUTES ---
 app.get('/', (req, res) => res.status(200).send('SmartReceipt Bot Webhook Server is running.'));
 
 app.post('/webhook', async (req, res) => {
@@ -125,7 +122,6 @@ app.post('/webhook', async (req, res) => {
     }
 });
 
-// --- WhatsApp Client Initialization ---
 client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] }
@@ -133,7 +129,6 @@ client = new Client({
 client.on('qr', qr => qrcode.generate(qr, { small: true }));
 client.on('ready', () => console.log('WhatsApp client is ready!'));
 
-// --- Main Message Handling Logic ---
 const commands = ['new receipt', 'changereceipt', 'stats', 'history', 'edit', 'export', 'add product', 'products', 'format', 'mybrand', 'cancel', 'commands', 'support', 'backup', 'restore'];
 const premiumCommands = ['new receipt', 'edit', 'export']; 
 
@@ -164,7 +159,7 @@ client.on('message', async msg => {
                 processingUsers.delete(senderId); return;
             }
             if (lowerCaseText.startsWith('close ')) {
-                await handleAdminCloseCommand(msg, text);
+                await handleAdminCloseCommand(msg, text, ADMIN_NUMBERS, client);
                 processingUsers.delete(senderId); return;
             }
         }
@@ -430,7 +425,6 @@ client.on('message', async msg => {
 });
 
 
-// --- GENERATION & REGENERATION FUNCTION ---
 async function generateAndSendFinalReceipt(senderId, user, receiptData, msg, isResend = false, isEdit = false) {
     const db = getDB();
 
@@ -443,10 +437,10 @@ async function generateAndSendFinalReceipt(senderId, user, receiptData, msg, isR
     const format = user.receiptFormat || 'PNG'; 
     const subtotal = receiptData.prices.reduce((sum, price) => sum + parseFloat(price || 0), 0);
     
-    let finalReceiptId = receiptData._id;
+    let finalReceiptId = receiptData._id; // This will be an ObjectId
     if (!isResend) {
         if (isEdit) {
-            await db.collection('receipts').updateOne({ _id: new ObjectId(receiptData._id) }, { 
+            await db.collection('receipts').updateOne({ _id: finalReceiptId }, { 
                 $set: {
                     customerName: receiptData.customerName, items: receiptData.items, 
                     prices: receiptData.prices.map(p => p.toString()),
@@ -455,12 +449,13 @@ async function generateAndSendFinalReceipt(senderId, user, receiptData, msg, isR
                 $inc: { editCount: 1 }
             });
         } else {
-             finalReceiptId = (await db.collection('receipts').insertOne({
+             const result = await db.collection('receipts').insertOne({
                 userId: senderId, createdAt: new Date(), customerName: receiptData.customerName,
                 totalAmount: subtotal, items: receiptData.items,
                 prices: receiptData.prices.map(p=>p.toString()), paymentMethod: receiptData.paymentMethod,
                 editCount: 0 
-            })).insertedId;
+            });
+            finalReceiptId = result.insertedId;
         }
     }
     
@@ -519,7 +514,6 @@ async function generateAndSendFinalReceipt(senderId, user, receiptData, msg, isR
     }
 }
 
-// --- Main Function ---
 async function startBot() {
     await connectToDB();
     client.initialize();
