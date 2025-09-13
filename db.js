@@ -1,24 +1,21 @@
-import { MongoClient, ObjectId } from 'mongodb';
-
+const { MongoClient, ObjectId } = require('mongodb');
 const MONGO_URI = process.env.MONGO_URI;
 const DB_NAME = 'receiptBot';
 
 let db;
 
-export async function connectToDB() {
+const connectToDB = async () => {
     try {
-        const mongoClient = new MongoClient(MONGO_URI);
-        await mongoClient.connect();
-        db = mongoClient.db(DB_NAME);
+        const client = new MongoClient(MONGO_URI);
+        await client.connect();
+        db = client.db(DB_NAME);
         console.log('Successfully connected to MongoDB.');
     } catch (error) {
         console.error('Failed to connect to MongoDB', error);
         process.exit(1);
     }
-}
+};
 
-export function getDB() {
-    return db;
-}
+const getDB = () => db;
 
-export { ObjectId };
+module.exports = { connectToDB, getDB, ObjectId };
