@@ -31,7 +31,7 @@ const PP_BUSINESS_ID = process.env.PP_BUSINESS_ID;
 const IMGBB_API_KEY = process.env.IMGBB_API_KEY;
 const RECEIPT_BASE_URL = process.env.RECEIPT_BASE_URL;
 const PORT = 3000;
-const ADMIN_NUMBERS = ['2347016370067@c.us'];
+const ADMIN_NUMBERS = ['2347016370067@c.us', '2348146817448@c.us'];
 
 // --- State and Web Server ---
 const app = express();
