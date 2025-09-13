@@ -31,7 +31,7 @@ const PP_BUSINESS_ID = process.env.PP_BUSINESS_ID;
 const IMGBB_API_KEY = process.env.IMGBB_API_KEY;
 const RECEIPT_BASE_URL = process.env.RECEIPT_BASE_URL;
 const PORT = 3000;
-const ADMIN_NUMBERS = ['2347016370067@c.us', '2348146817448@c.us'];
+const ADMIN_NUMBERS = ['2347016370067@c.us'];
 
 // --- State and Web Server ---
 const app = express();
@@ -408,6 +408,70 @@ client.on('message', async msg => {
                     await sendMessageWithDelay(msg, `✅ *Setup Complete!* Your brand profile is all set.\n\nTo create your first receipt, just type:\n*'new receipt'*`);
                     break;
                 }
+                case 'receipt_customer_name': {
+                    const hasProducts = await db.collection('products').findOne({ userId: senderId });
+                    const prompt = hasProducts 
+                        ? `Customer: *${text}*\n\nNow, add items. Use your catalog (e.g., _Fanta x2_) or type items manually (e.g., _Rice, Beans_).`
+                        : `Customer: *${text}*\n\nWhat item(s) did they purchase? (Separate with commas)`;
+                    await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'receipt_items', 'data.receiptData.customerName': text } });
+                    await sendMessageWithDelay(msg, prompt);
+                    break;
+                }
+                case 'receipt_items': {
+                    const items = []; const prices = []; const manualItems = [];
+                    const parts = text.split(',');
+                    for (const part of parts) {
+                        const trimmedPart = part.trim();
+                        const quickAddMatch = /(.+)\s+x(\d+)/i.exec(trimmedPart);
+                        if (quickAddMatch) {
+                            const productName = quickAddMatch[1].trim();
+                            const quantity = parseInt(quickAddMatch[2], 10);
+                            const product = await db.collection('products').findOne({ userId: senderId, name: { $regex: new RegExp(`^${productName}$`, 'i') } });
+                            if (product) {
+                                for (let i = 0; i < quantity; i++) { items.push(product.name); prices.push(product.price); }
+                            } else { manualItems.push(trimmedPart); }
+                        } else if (trimmedPart) { manualItems.push(trimmedPart); }
+                    }
+                    if (manualItems.length > 0) {
+                        await db.collection('conversations').updateOne({ userId: senderId }, { $set: { 
+                            state: 'receipt_manual_prices', 'data.receiptData.manualItems': manualItems,
+                            'data.receiptData.quickAddItems': items, 'data.receiptData.quickAddPrices': prices
+                        }});
+                        await sendMessageWithDelay(msg, `Catalog items added. Now, please enter the prices for your manual items:\n\n*${manualItems.join(', ')}*`);
+                    } else {
+                        await db.collection('conversations').updateOne({ userId: senderId }, { $set: { 
+                            state: 'receipt_payment_method', 'data.receiptData.items': items,
+                            'data.receiptData.prices': prices.map(p => p.toString())
+                        }});
+                        await sendMessageWithDelay(msg, `Items and prices added from your catalog.\n\nWhat was the payment method?`);
+                    }
+                    break;
+                }
+                case 'receipt_manual_prices': {
+                    const manualPrices = text.split(',').map(p => p.trim());
+                    if(manualPrices.length !== userSession.data.receiptData.manualItems.length) {
+                        await sendMessageWithDelay(msg, "The number of prices does not match the number of manual items. Please try again.");
+                        break;
+                    }
+                    const finalItems = [...userSession.data.receiptData.quickAddItems, ...userSession.data.receiptData.manualItems];
+                    const finalPrices = [...userSession.data.receiptData.quickAddPrices, ...manualPrices].map(p => p.toString());
+                    await db.collection('conversations').updateOne({ userId: senderId }, { $set: { 
+                        state: 'receipt_payment_method', 'data.receiptData.items': finalItems, 'data.receiptData.prices': finalPrices
+                    }});
+                    await sendMessageWithDelay(msg, `Prices saved.\n\nWhat was the payment method?`);
+                    break;
+                }
+                case 'receipt_payment_method': {
+                    userSession.data.receiptData.paymentMethod = text;
+                    if (!user.receiptFormat) {
+                        await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'awaiting_initial_format_choice', 'data.receiptData': userSession.data.receiptData } });
+                        const formatMessage = `Payment method saved.\n\nOne last thing for your first receipt! What's your preferred format?\n\n*1. Image (PNG)*\n_Good for quick sharing._\n\n*2. Document (PDF)*\n_Best for official records._\n\nPlease reply with *1* or *2*.`;
+                        await sendMessageWithDelay(msg, formatMessage);
+                    } else {
+                        await generateAndSendFinalReceipt(senderId, user, userSession.data.receiptData, msg);
+                    }
+                    break;
+                }
             }
         } else {
             if (!user) {
@@ -437,7 +501,7 @@ async function generateAndSendFinalReceipt(senderId, user, receiptData, msg, isR
     const format = user.receiptFormat || 'PNG'; 
     const subtotal = receiptData.prices.reduce((sum, price) => sum + parseFloat(price || 0), 0);
     
-    let finalReceiptId = receiptData._id; // This will be an ObjectId
+    let finalReceiptId = receiptData._id; 
     if (!isResend) {
         if (isEdit) {
             await db.collection('receipts').updateOne({ _id: finalReceiptId }, { 
