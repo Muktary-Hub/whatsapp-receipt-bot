@@ -20,7 +20,8 @@ const {
 } = require('./support.js');
 
 // --- BUSINESS MODEL ---
-const YEARLY_FEE = 2000;
+// UPDATED: Renamed for clarity
+const SUBSCRIPTION_FEE = 2000;
 const FREE_TRIAL_LIMIT = 3;
 const FREE_EDIT_LIMIT = 2;
 
@@ -101,7 +102,9 @@ app.post('/webhook', async (req, res) => {
             console.log(`Payment successfully matched to user: ${userId}`);
             
             const expiryDate = new Date();
-            expiryDate.setFullYear(expiryDate.getFullYear() + 1);
+            // --- MODIFIED ---
+            // Changed from 1 year to 6 months
+            expiryDate.setMonth(expiryDate.getMonth() + 6);
 
             const result = await db.collection('users').updateOne(
                 { userId: userId }, 
@@ -190,7 +193,9 @@ client.on('message', async msg => {
             const subscriptionActive = isSubscriptionActive(user, ADMIN_NUMBERS);
             if (!subscriptionActive && premiumCommands.includes(lowerCaseText) && user && user.receiptCount >= FREE_TRIAL_LIMIT) {
                 await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'awaiting_payment_decision' } }, { upsert: true });
-                const paywallMessage = `Dear *${user.brandName}*,\n\nYou have reached your limit of ${FREE_TRIAL_LIMIT} free receipts. To unlock unlimited access, please subscribe for just *₦${YEARLY_FEE.toLocaleString()} per year*.\n\nThis will give you unlimited receipts and full access to all features. Would you like to subscribe?\n\n(Please reply *Yes* or *No*)`;
+                // --- MODIFIED ---
+                // Changed "per year" to "for 6 months"
+                const paywallMessage = `Dear *${user.brandName}*,\n\nYou have reached your limit of ${FREE_TRIAL_LIMIT} free receipts. To unlock unlimited access, please subscribe for just *₦${SUBSCRIPTION_FEE.toLocaleString()} for 6 months*.\n\nThis will give you unlimited receipts and full access to all features. Would you like to subscribe?\n\n(Please reply *Yes* or *No*)`;
                 await sendMessageWithDelay(msg, paywallMessage);
                 processingUsers.delete(senderId);
                 return;
@@ -644,7 +649,9 @@ client.on('message', async msg => {
                         await sendMessageWithDelay(msg, "Great! Generating a secure payment account for you now...");
                         const accountDetails = await generateVirtualAccount(user);
                         if (accountDetails && accountDetails.bankName) {
-                            const reply = `To get your yearly subscription for *₦${YEARLY_FEE.toLocaleString()}*, please transfer to this account:\n\n` + `*Bank:* ${accountDetails.bankName}\n` + `*Account Number:* ${accountDetails.accountNumber}\n\n` + `Your access will be unlocked automatically after payment.`;
+                            // --- MODIFIED ---
+                            // Changed "yearly subscription" to "6-month subscription"
+                            const reply = `To get your 6-month subscription for *₦${SUBSCRIPTION_FEE.toLocaleString()}*, please transfer to this account:\n\n` + `*Bank:* ${accountDetails.bankName}\n` + `*Account Number:* ${accountDetails.accountNumber}\n\n` + `Your access will be unlocked automatically after payment.`;
                             await msg.reply(reply);
                         } else { await msg.reply("Sorry, I couldn't generate a payment account right now. Please contact support."); }
                     } else if (lowerCaseText === 'no') {
@@ -769,3 +776,4 @@ async function startBot() {
 }
 
 startBot();
+
