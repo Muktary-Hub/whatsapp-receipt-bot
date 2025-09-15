@@ -18,6 +18,7 @@ const {
     handleAdminReplyCommand, 
     handleAdminCloseCommand 
 } = require('./support.js');
+const { startTelegramBot } = require('./telegramBot.js'); // <-- 1. THIS LINE IS NEW
 
 // --- NEW HELPER FUNCTION TO PARSE COMPLEX USER INPUT ---
 function parseInputList(text) {
@@ -32,17 +33,14 @@ function parseInputList(text) {
         const part = dirtyParts[i].trim();
         if (!part) continue;
 
-        // Check if the next part is a 3-digit number (continuation of a number like 30,000)
         const nextPart = (i + 1 < dirtyParts.length) ? dirtyParts[i + 1].trim() : null;
         if (!isNaN(part) && nextPart && nextPart.length === 3 && !isNaN(nextPart)) {
-            // Join them and skip the next part in the loop
             cleanParts.push(part + nextPart);
             i++; 
         } else {
             cleanParts.push(part);
         }
     }
-    // Final pass to remove any commas still inside the numbers
     return cleanParts.map(p => p.replace(/,/g, ''));
 }
 
@@ -800,6 +798,7 @@ async function generateAndSendFinalReceipt(senderId, user, receiptData, msg, isR
 async function startBot() {
     await connectToDB();
     client.initialize();
+    startTelegramBot(); // <-- 2. THIS LINE IS NEW
     app.listen(PORT, () => console.log(`Webhook server listening on port ${PORT}`));
 }
 
