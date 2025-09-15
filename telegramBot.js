@@ -1,11 +1,12 @@
-// telegramBot.js
+// telegramBot.js (Complete)
 
 const TelegramBot = require('node-telegram-bot-api');
 const { handleMessage } = require('./messageHandler.js');
+const stream = require('stream');
 
 /**
  * Initializes and runs the Telegram bot.
- * @param {object} clients - The shared object containing the whatsapp and telegram client instances.
+ * @param {object} clients - The shared object for clients { browser }.
  * @returns The initialized telegram bot instance.
  */
 function startTelegramBot(clients) {
@@ -16,32 +17,68 @@ function startTelegramBot(clients) {
     }
 
     const bot = new TelegramBot(token, { polling: true });
-    clients.telegram = bot; // Add the bot instance to the shared clients object for other files to use
+    clients.telegram = bot;
     console.log('✅ Telegram Bot is running and listening for messages...');
 
-    // Listen for any kind of message.
     bot.on('message', async (msg) => {
         const chatId = msg.chat.id;
-        const text = msg.text;
 
-        // We only process text messages
-        if (!text) return;
+        // A message might be text-only, or media with a caption.
+        const text = msg.text || msg.caption || '';
+        const hasMedia = !!(msg.photo || msg.document);
         
-        // This is the "adapter". It creates a standardized message object
-        // that our central handler can understand, regardless of the platform.
         const messageAdapter = {
             platform: 'telegram',
-            chatId: chatId,
+            chatId: chatId.toString(),
             text: text,
+            hasMedia: hasMedia,
             originalMessage: msg,
-            // This function allows the central handler to reply without knowing it's talking to Telegram.
+
+            // Function to reply with simple text
             reply: async (message, options) => {
-                // The 'Markdown' parse mode allows for bold (*text*) and italics (_text_).
                 await bot.sendMessage(chatId, message, { parse_mode: 'Markdown', ...options });
+            },
+
+            // Function to send a file (PDF or PNG)
+            replyWithFile: async (fileData, caption) => {
+                const { buffer, fileName, mimeType } = fileData;
+                const fileOptions = {
+                    filename: fileName,
+                    contentType: mimeType,
+                    caption: caption
+                };
+
+                if (mimeType === 'application/pdf' || mimeType === 'text/plain') {
+                    await bot.sendDocument(chatId, buffer, { caption: caption }, fileOptions);
+                } else if (mimeType === 'image/png') {
+                    await bot.sendPhoto(chatId, buffer, { caption: caption });
+                }
+            },
+
+            // Function to download media sent by a user
+            downloadMedia: async () => {
+                if (!hasMedia) return null;
+                
+                // Get the file ID from the largest available photo size
+                const fileId = msg.photo[msg.photo.length - 1].file_id;
+                const fileStream = bot.getFileStream(fileId);
+
+                return new Promise((resolve, reject) => {
+                    const chunks = [];
+                    fileStream.on('data', (chunk) => chunks.push(chunk));
+                    fileStream.on('error', reject);
+                    fileStream.on('end', () => {
+                        // Return an object compatible with the 'uploadLogo' function
+                        resolve({
+                            mimetype: 'image/jpeg', // Telegram converts uploads to jpeg
+                            data: Buffer.concat(chunks).toString('base64'),
+                            filename: `${fileId}.jpg`
+                        });
+                    });
+                });
             }
         };
 
-        // Send the standardized message to the central brain for processing.
         await handleMessage(clients, messageAdapter);
     });
     
