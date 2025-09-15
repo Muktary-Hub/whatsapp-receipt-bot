@@ -2,7 +2,7 @@
   "name": "whatsapp-receipt-bot",
   "version": "1.0.0",
   "description": "A WhatsApp bot for generating receipts.",
-  "main": "index.js",
+  "main": "manualUpdate.js",
   "scripts": {
     "start": "node index.js"
   },
