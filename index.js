@@ -1,5 +1,3 @@
-Full provide the full messageHandler.js that contains all logic and commands if Yoo have forget check it here
-
 // --- Dependencies ---
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const axios = require('axios');
