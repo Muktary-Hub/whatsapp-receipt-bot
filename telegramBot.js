@@ -61,6 +61,36 @@ function startTelegramBot() {
                 return;
             }
 
+            // --- NEW: Check for an active conversation session ---
+            let userSession = await db.collection('conversations').findOne({ telegramId: chatId });
+            if (userSession) {
+                switch (userSession.state) {
+                    case 'adding_product_name':
+                        await db.collection('conversations').updateOne(
+                            { telegramId: chatId }, 
+                            { $set: { state: 'adding_product_price', 'data.newProductName': text } }
+                        );
+                        bot.sendMessage(chatId, `Got it. What's the price for *${text}*?`, { parse_mode: 'Markdown' });
+                        return; // Stop further processing
+
+                    case 'adding_product_price':
+                        const price = parseFloat(text.trim().replace(/,/g, ''));
+                        if (isNaN(price)) {
+                            bot.sendMessage(chatId, "That's not a valid price. Please send only a number.");
+                            return; // Stop further processing
+                        }
+                        const productName = userSession.data.newProductName;
+                        await db.collection('products').updateOne(
+                            { userId: user.userId, name: { $regex: new RegExp(`^${productName}$`, 'i') } },
+                            { $set: { price: price, name: productName, userId: user.userId } },
+                            { upsert: true }
+                        );
+                        await db.collection('conversations').deleteOne({ telegramId: chatId }); // End conversation
+                        bot.sendMessage(chatId, `✅ Saved: *${productName}* - ₦${price.toLocaleString()}.\n\nTo add another, just type /addproduct again.`, { parse_mode: 'Markdown' });
+                        return; // Stop further processing
+                }
+            }
+
             // --- COMMAND HANDLING ---
             const command = text.toLowerCase();
 
@@ -68,12 +98,7 @@ function startTelegramBot() {
                  bot.sendMessage(chatId, `Okay ${user.brandName}, let's create a new receipt.\n\n*(Full receipt creation on Telegram is coming in the next update!)*`);
             
             } else if (command === '/history') {
-                const recentReceipts = await db.collection('receipts')
-                    .find({ userId: user.userId }) 
-                    .sort({ createdAt: -1 })
-                    .limit(5)
-                    .toArray();
-
+                const recentReceipts = await db.collection('receipts').find({ userId: user.userId }).sort({ createdAt: -1 }).limit(5).toArray();
                 if (recentReceipts.length === 0) {
                     bot.sendMessage(chatId, "You haven't generated any receipts yet.");
                 } else {
@@ -86,30 +111,38 @@ function startTelegramBot() {
                 }
 
             } else if (command === '/stats') {
-                // --- NEW FEATURE LOGIC STARTS HERE ---
                 const now = new Date();
                 const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
                 const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
-                
-                const receipts = await db.collection('receipts').find({ 
-                    userId: user.userId, 
-                    createdAt: { $gte: startOfMonth, $lte: endOfMonth } 
-                }).toArray();
-                
+                const receipts = await db.collection('receipts').find({ userId: user.userId, createdAt: { $gte: startOfMonth, $lte: endOfMonth } }).toArray();
                 const totalSales = receipts.reduce((sum, receipt) => sum + receipt.totalAmount, 0);
                 const receiptCount = receipts.length;
                 const monthName = startOfMonth.toLocaleString('default', { month: 'long' });
-                
                 let statsMessage = `📊 *Your Stats for ${monthName}*\n\n*Receipts Generated:* ${receiptCount}\n*Total Sales:* ₦${totalSales.toLocaleString()}`;
                 bot.sendMessage(chatId, statsMessage, { parse_mode: 'Markdown' });
-                // --- NEW FEATURE LOGIC ENDS HERE ---
+
+            } else if (command === '/products') {
+                const products = await db.collection('products').find({ userId: user.userId }).sort({name: 1}).toArray();
+                if(products.length === 0) {
+                    bot.sendMessage(chatId, "You haven't added any products to your catalog yet. Type /addproduct to start.");
+                } else {
+                    let productList = "📦 *Your Product Catalog*\n\n";
+                    products.forEach(p => { productList += `*${p.name}* - ₦${p.price.toLocaleString()}\n`; });
+                    bot.sendMessage(chatId, productList, { parse_mode: 'Markdown' });
+                }
+
+            } else if (command === '/addproduct') {
+                // --- NEW: Start the conversation for adding a product ---
+                await db.collection('conversations').updateOne({ telegramId: chatId }, { $set: { state: 'adding_product_name', data: {} } }, { upsert: true });
+                bot.sendMessage(chatId, "Let's add a new product. What is the product's name?");
 
             } else if (command === '/commands') {
-                 // Updated the commands list to include /stats
                  const commandsList = "Here are the available commands:\n\n" +
                     "*/newreceipt* - Start creating a new receipt.\n" +
                     "*/history* - See your last 5 receipts.\n" +
-                    "*/stats* - View your sales stats for the current month.\n\n" +
+                    "*/stats* - View your sales stats for the current month.\n" +
+                    "*/products* - View your saved product catalog.\n" +
+                    "*/addproduct* - Add a new product to your catalog.\n\n" +
                     "_More advanced features are coming soon!_";
                  bot.sendMessage(chatId, commandsList, { parse_mode: 'Markdown' });
             } else {
