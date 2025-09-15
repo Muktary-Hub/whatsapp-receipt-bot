@@ -154,7 +154,14 @@ client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] }
 });
-client.on('qr', qr => qrcode.generate(qr, { small: true }));
+
+// --- THIS IS THE ONLY CHANGE ---
+client.on('qr', qr => {
+    console.log('HERE IS THE QR CODE TEXT TO COPY:');
+    console.log(qr);
+});
+// -----------------------------
+
 client.on('ready', () => console.log('WhatsApp client is ready!'));
 
 const commands = ['new receipt', 'changereceipt', 'stats', 'history', 'edit', 'export', 'add product', 'products', 'format', 'mybrand', 'cancel', 'commands', 'support', 'backup', 'restore'];
