@@ -49,7 +49,7 @@ function parseInputList(text) {
 
 // --- BUSINESS MODEL ---
 const SUBSCRIPTION_FEE = 2000;
-const FREE_TRIAL_LIMIT = 3;
+const FREE_TRIAL_LIMIT = 2;
 const FREE_EDIT_LIMIT = 2;
 
 // --- Configuration ---
