@@ -3,7 +3,9 @@
 const TelegramBot = require('node-telegram-bot-api');
 const { getDB } = require('./db.js');
 
-const token = process.env.TELEGRAM_BOT_TOKEN;
+// --- MODIFIED LINE ---
+// We now use .trim() to remove any accidental whitespace from the token
+const token = process.env.TELEGRAM_BOT_TOKEN ? process.env.TELEGRAM_BOT_TOKEN.trim() : null;
 
 /**
  * This function initializes and runs the Telegram bot.
@@ -94,3 +96,4 @@ function startTelegramBot() {
 }
 
 module.exports = { startTelegramBot };
+
