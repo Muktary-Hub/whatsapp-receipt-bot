@@ -1,13 +1,13 @@
-// index.js (Corrected)
+// index.js
 
 const express = require('express');
 const qrcode = require('qrcode-terminal');
-const cors = require('cors');
-const puppeteer = require('puppeteer'); // <-- 1. IMPORT PUPPETEER
+const puppeteer = require('puppeteer'); 
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const { connectToDB, getDB } = require('./db.js');
 const { startTelegramBot } = require('./telegramBot.js');
 const { handleMessage } = require('./messageHandler.js');
+const cors = require('cors');
 
 const PORT = process.env.PORT || 3000;
 const app = express();
@@ -15,11 +15,9 @@ app.use(express.json());
 const corsOptions = { origin: ['http://smartnaijaservices.com.ng', 'https://smartnaijaservices.com.ng'] };
 app.use(cors(corsOptions));
 
-// Main function to start all services
 async function startApp() {
     await connectToDB();
 
-    // --- 2. LAUNCH A SHARED BROWSER INSTANCE ---
     console.log('Launching shared browser...');
     const browser = await puppeteer.launch({
         headless: true,
@@ -27,24 +25,26 @@ async function startApp() {
     });
     console.log('Browser launched successfully.');
 
-    // --- 3. CONFIGURE WHATSAPP TO USE THE SHARED BROWSER ---
     const whatsappClient = new Client({
         authStrategy: new LocalAuth(),
         puppeteer: { browserWSEndpoint: browser.wsEndpoint() } 
     });
 
-    // This object holds all shared clients
     const clients = {
         whatsapp: whatsappClient,
         telegram: null,
-        browser: browser // Add the browser to the shared clients
+        browser: browser
     };
 
-    // --- 4. START THE BOTS, PASSING THE SHARED CLIENTS OBJECT ---
     startTelegramBot(clients);
 
     whatsappClient.on('qr', qr => {
-        qrcode.generate(qr, { small: true });
+        // --- THIS IS THE ONLY CHANGE ---
+        console.log('--------------------------------------------------');
+        console.log('COPY THE TEXT BELOW TO A QR CODE GENERATOR APP:');
+        console.log(qr); // This line prints the raw QR code text
+        console.log('--------------------------------------------------');
+        // qrcode.generate(qr, { small: true }); // We have disabled the picture version
     });
 
     whatsappClient.on('ready', () => {
@@ -55,7 +55,6 @@ async function startApp() {
         const chat = await msg.getChat();
         if (chat.isGroup) return;
 
-        // Create the standardized message object for the handler
         const messageAdapter = {
             platform: 'whatsapp',
             chatId: msg.from,
@@ -78,7 +77,6 @@ async function startApp() {
 
     await whatsappClient.initialize();
     
-    // --- WEB SERVER AND WEBHOOK LOGIC ---
     app.get('/', (req, res) => res.status(200).send('SmartReceipt Bot Webhook Server is running.'));
 
     app.post('/webhook', async (req, res) => {
@@ -117,4 +115,3 @@ async function startApp() {
 }
 
 startApp();
-
