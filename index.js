@@ -19,8 +19,35 @@ const {
     handleAdminCloseCommand 
 } = require('./support.js');
 
+// --- NEW HELPER FUNCTION TO PARSE COMPLEX USER INPUT ---
+function parseInputList(text) {
+    // Treat newlines and commas as potential separators
+    const normalizedText = text.replace(/\n/g, ',');
+    const dirtyParts = normalizedText.split(',');
+
+    const cleanParts = [];
+    
+    // Intelligently re-join numbers that were split by a comma
+    for (let i = 0; i < dirtyParts.length; i++) {
+        const part = dirtyParts[i].trim();
+        if (!part) continue;
+
+        // Check if the next part is a 3-digit number (continuation of a number like 30,000)
+        const nextPart = (i + 1 < dirtyParts.length) ? dirtyParts[i + 1].trim() : null;
+        if (!isNaN(part) && nextPart && nextPart.length === 3 && !isNaN(nextPart)) {
+            // Join them and skip the next part in the loop
+            cleanParts.push(part + nextPart);
+            i++; 
+        } else {
+            cleanParts.push(part);
+        }
+    }
+    // Final pass to remove any commas still inside the numbers
+    return cleanParts.map(p => p.replace(/,/g, ''));
+}
+
+
 // --- BUSINESS MODEL ---
-// UPDATED: Renamed for clarity
 const SUBSCRIPTION_FEE = 2000;
 const FREE_TRIAL_LIMIT = 3;
 const FREE_EDIT_LIMIT = 2;
@@ -102,8 +129,6 @@ app.post('/webhook', async (req, res) => {
             console.log(`Payment successfully matched to user: ${userId}`);
             
             const expiryDate = new Date();
-            // --- MODIFIED ---
-            // Changed from 1 year to 6 months
             expiryDate.setMonth(expiryDate.getMonth() + 6);
 
             const result = await db.collection('users').updateOne(
@@ -136,6 +161,13 @@ const commands = ['new receipt', 'changereceipt', 'stats', 'history', 'edit', 'e
 const premiumCommands = ['new receipt', 'edit', 'export']; 
 
 client.on('message', async msg => {
+    // --- FIX: IGNORE MESSAGES FROM GROUPS ---
+    const chat = await msg.getChat();
+    if (chat.isGroup) {
+        return; 
+    }
+    // --- END OF FIX ---
+
     const senderId = msg.from;
     
     if (processingUsers.has(senderId)) return; 
@@ -193,8 +225,6 @@ client.on('message', async msg => {
             const subscriptionActive = isSubscriptionActive(user, ADMIN_NUMBERS);
             if (!subscriptionActive && premiumCommands.includes(lowerCaseText) && user && user.receiptCount >= FREE_TRIAL_LIMIT) {
                 await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'awaiting_payment_decision' } }, { upsert: true });
-                // --- MODIFIED ---
-                // Changed "per year" to "for 6 months"
                 const paywallMessage = `Dear *${user.brandName}*,\n\nYou have reached your limit of ${FREE_TRIAL_LIMIT} free receipts. To unlock unlimited access, please subscribe for just *₦${SUBSCRIPTION_FEE.toLocaleString()} for 6 months*.\n\nThis will give you unlimited receipts and full access to all features. Would you like to subscribe?\n\n(Please reply *Yes* or *No*)`;
                 await sendMessageWithDelay(msg, paywallMessage);
                 processingUsers.delete(senderId);
@@ -416,15 +446,15 @@ client.on('message', async msg => {
                 case 'receipt_customer_name': {
                     const hasProducts = await db.collection('products').findOne({ userId: senderId });
                     const prompt = hasProducts 
-                        ? `Customer: *${text}*\n\nNow, add items. Use your catalog (e.g., _Fanta x2_) or type items manually (e.g., _Rice, Beans_).`
-                        : `Customer: *${text}*\n\nWhat item(s) did they purchase? (Separate with commas)`;
+                        ? `Customer: *${text}*\n\nNow, add items. You can use your catalog (e.g., _Fanta x2_) or type items manually.\n\n*(Separate with commas or list on new lines)*`
+                        : `Customer: *${text}*\n\nWhat item(s) did they purchase?\n\n*(Separate with commas or list on new lines)*`;
                     await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'receipt_items', 'data.receiptData.customerName': text } });
                     await sendMessageWithDelay(msg, prompt);
                     break;
                 }
                 case 'receipt_items': {
                     const items = []; const prices = []; const manualItems = [];
-                    const parts = text.split(',');
+                    const parts = parseInputList(text);
                     for (const part of parts) {
                         const trimmedPart = part.trim();
                         const quickAddMatch = /(.+)\s+x(\d+)/i.exec(trimmedPart);
@@ -442,7 +472,7 @@ client.on('message', async msg => {
                             state: 'receipt_manual_prices', 'data.receiptData.manualItems': manualItems,
                             'data.receiptData.quickAddItems': items, 'data.receiptData.quickAddPrices': prices
                         }});
-                        await sendMessageWithDelay(msg, `Catalog items added. Now, please enter the prices for your manual items:\n\n*${manualItems.join(', ')}*`);
+                        await sendMessageWithDelay(msg, `Catalog items added. Now, please enter the prices for your manual items, *each on a new line or separated by commas*:\n\n*${manualItems.join('\n')}*`);
                     } else {
                         await db.collection('conversations').updateOne({ userId: senderId }, { $set: { 
                             state: 'receipt_payment_method', 'data.receiptData.items': items,
@@ -453,7 +483,7 @@ client.on('message', async msg => {
                     break;
                 }
                 case 'receipt_manual_prices': {
-                    const manualPrices = text.split(',').map(p => p.trim());
+                    const manualPrices = parseInputList(text);
                     if(manualPrices.length !== userSession.data.receiptData.manualItems.length) {
                         await sendMessageWithDelay(msg, "The number of prices does not match the number of manual items. Please try again.");
                         break;
@@ -538,7 +568,7 @@ client.on('message', async msg => {
                     const editChoice = parseInt(text, 10);
                     let nextState = '', prompt = '';
                     if (editChoice === 1) { nextState = 'editing_customer_name'; prompt = 'What is the new customer name?'; }
-                    else if (editChoice === 2) { nextState = 'editing_items'; prompt = 'Please re-enter all items, separated by commas.'; }
+                    else if (editChoice === 2) { nextState = 'editing_items'; prompt = 'Please re-enter all items, *separated by commas or on new lines*.'; }
                     else if (editChoice === 3) { nextState = 'editing_payment_method'; prompt = 'What is the new payment method?'; }
                     else { await sendMessageWithDelay(msg, getRandomReply(invalidChoiceReplies)); break; }
                     await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: nextState } });
@@ -552,13 +582,13 @@ client.on('message', async msg => {
                     break;
                 }
                 case 'editing_items': {
-                    userSession.data.receiptToEdit.items = text.split(',').map(item => item.trim());
+                    userSession.data.receiptToEdit.items = parseInputList(text);
                     await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'editing_prices', 'data.receiptToEdit': userSession.data.receiptToEdit } });
                     await sendMessageWithDelay(msg, "Items updated. Now, please re-enter all prices in the correct order.");
                     break;
                 }
                 case 'editing_prices': {
-                    userSession.data.receiptToEdit.prices = text.split(',').map(p => p.trim());
+                    userSession.data.receiptToEdit.prices = parseInputList(text);
                     if (userSession.data.receiptToEdit.items.length !== userSession.data.receiptToEdit.prices.length) {
                         await sendMessageWithDelay(msg, "The number of items and prices don't match. Please try editing again by typing 'edit'.");
                         await db.collection('conversations').deleteOne({ userId: senderId });
@@ -608,7 +638,7 @@ client.on('message', async msg => {
                     break;
                 }
                 case 'adding_product_price': {
-                    const price = parseFloat(text);
+                    const price = parseFloat(text.trim().replace(/,/g, ''));
                     if (isNaN(price)) {
                         await sendMessageWithDelay(msg, "That's not a valid price. Please send only a number.");
                         break;
@@ -649,8 +679,6 @@ client.on('message', async msg => {
                         await sendMessageWithDelay(msg, "Great! Generating a secure payment account for you now...");
                         const accountDetails = await generateVirtualAccount(user);
                         if (accountDetails && accountDetails.bankName) {
-                            // --- MODIFIED ---
-                            // Changed "yearly subscription" to "6-month subscription"
                             const reply = `To get your 6-month subscription for *₦${SUBSCRIPTION_FEE.toLocaleString()}*, please transfer to this account:\n\n` + `*Bank:* ${accountDetails.bankName}\n` + `*Account Number:* ${accountDetails.accountNumber}\n\n` + `Your access will be unlocked automatically after payment.`;
                             await msg.reply(reply);
                         } else { await msg.reply("Sorry, I couldn't generate a payment account right now. Please contact support."); }
@@ -776,4 +804,3 @@ async function startBot() {
 }
 
 startBot();
-
