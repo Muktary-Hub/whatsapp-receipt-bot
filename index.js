@@ -143,7 +143,7 @@ const commands = ['new receipt', 'changereceipt', 'stats', 'history', 'edit', 'e
 const premiumCommands = ['new receipt', 'edit', 'export'];
 
 client.on('message', async msg => {
- const chat = await msg.getChat(); //
+ const chat = await msg.getChat();
 
     if (chat.isGroup) {
         return;
@@ -160,11 +160,13 @@ client.on('message', async msg => {
         const lowerCaseText = text.toLowerCase();
 
         let user = await db.collection('users').findOne({ userId: senderId });
+        let userSession = await db.collection('conversations').findOne({ userId: senderId });
         const isAdmin = ADMIN_NUMBERS.includes(senderId);
 
-        // --- FIX #1: NEW USER ONBOARDING LOGIC MOVED TO THE TOP ---
-        // This ensures any new user sending any message is onboarded correctly.
-        if (!user && !lowerCaseText.startsWith('restore')) {
+        // --- 💡 FIX APPLIED HERE ---
+        // This condition now checks for BOTH a user record and a session record.
+        // It will only run if the user is truly new and not already in an onboarding conversation.
+        if (!user && !userSession && !lowerCaseText.startsWith('restore')) {
             const settings = await db.collection('settings').findOne({ _id: 'global_settings' });
             const registrationsOpen = settings ? settings.registrationsOpen : true;
 
@@ -198,8 +200,7 @@ client.on('message', async msg => {
             processingUsers.delete(senderId);
             return; // Stop further processing for a new user
         }
-
-        let userSession = await db.collection('conversations').findOne({ userId: senderId });
+        
         const currentState = userSession ? userSession.state : null;
 
         if (isAdmin) {
