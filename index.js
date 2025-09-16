@@ -19,30 +19,22 @@ const {
     handleAdminCloseCommand 
 } = require('./support.js');
 
-// --- NEW HELPER FUNCTION TO PARSE COMPLEX USER INPUT ---
+// --- HELPER FUNCTION TO PARSE COMPLEX USER INPUT ---
 function parseInputList(text) {
-    // Treat newlines and commas as potential separators
     const normalizedText = text.replace(/\n/g, ',');
     const dirtyParts = normalizedText.split(',');
-
     const cleanParts = [];
-    
-    // Intelligently re-join numbers that were split by a comma
     for (let i = 0; i < dirtyParts.length; i++) {
         const part = dirtyParts[i].trim();
         if (!part) continue;
-
-        // Check if the next part is a 3-digit number (continuation of a number like 30,000)
         const nextPart = (i + 1 < dirtyParts.length) ? dirtyParts[i + 1].trim() : null;
         if (!isNaN(part) && nextPart && nextPart.length === 3 && !isNaN(nextPart)) {
-            // Join them and skip the next part in the loop
             cleanParts.push(part + nextPart);
             i++; 
         } else {
             cleanParts.push(part);
         }
     }
-    // Final pass to remove any commas still inside the numbers
     return cleanParts.map(p => p.replace(/,/g, ''));
 }
 
@@ -155,12 +147,10 @@ client = new Client({
     puppeteer: { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] }
 });
 
-// --- THIS IS THE ONLY CHANGE ---
 client.on('qr', qr => {
     console.log('HERE IS THE QR CODE TEXT TO COPY:');
     console.log(qr);
 });
-// -----------------------------
 
 client.on('ready', () => console.log('WhatsApp client is ready!'));
 
@@ -168,12 +158,10 @@ const commands = ['new receipt', 'changereceipt', 'stats', 'history', 'edit', 'e
 const premiumCommands = ['new receipt', 'edit', 'export']; 
 
 client.on('message', async msg => {
-    // --- FIX: IGNORE MESSAGES FROM GROUPS ---
     const chat = await msg.getChat();
     if (chat.isGroup) {
         return; 
     }
-    // --- END OF FIX ---
 
     const senderId = msg.from;
     
@@ -187,9 +175,6 @@ client.on('message', async msg => {
         
         let user = await db.collection('users').findOne({ userId: senderId });
         const isAdmin = ADMIN_NUMBERS.includes(senderId);
-        
-        let userSession = await db.collection('conversations').findOne({ userId: senderId });
-        const currentState = userSession ? userSession.state : null;
         
         if (isAdmin) {
             if (lowerCaseText === 'tickets') {
@@ -210,7 +195,36 @@ client.on('message', async msg => {
             await handleSupportCommand(msg, senderId);
             processingUsers.delete(senderId); return;
         }
+
+        // --- FIX: NEW USER ONBOARDING LOGIC ---
+        if (!user && !lowerCaseText.startsWith('restore')) {
+            let userSession = await db.collection('conversations').findOne({ userId: senderId });
+            
+            if (userSession && userSession.state === 'awaiting_brand_name') {
+                // This is the user's reply with their brand name.
+                await db.collection('users').insertOne({ userId: senderId, brandName: text, onboardingComplete: false, receiptCount: 0, isPaid: false, createdAt: new Date() });
+                await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'awaiting_brand_color' } });
+                await sendMessageWithDelay(msg, `Great! Your brand is "${text}".\n\nWhat's your brand's main color? (e.g., #1D4ED8 or "blue")`);
+            } else {
+                // This is the very first message. Greet them and set the state.
+                const welcomePrompts = [
+                    "👋 Welcome! It looks like you're new here. Let's set up your brand first.\n\nWhat is your business name?",
+                    "Hello! To get started, please tell me your business name."
+                ];
+                await sendMessageWithDelay(msg, getRandomReply(welcomePrompts));
+                await db.collection('conversations').updateOne(
+                    { userId: senderId }, 
+                    { $set: { state: 'awaiting_brand_name', data: {} } },
+                    { upsert: true }
+                );
+            }
+            processingUsers.delete(senderId);
+            return; // IMPORTANT: Stop further processing for new users here.
+        }
+        // --- END OF FIX ---
         
+        let userSession = await db.collection('conversations').findOne({ userId: senderId });
+        const currentState = userSession ? userSession.state : null;
         const isCommand = commands.includes(lowerCaseText) || lowerCaseText.startsWith('remove product') || lowerCaseText.startsWith('restore');
 
         if (isCommand) {
@@ -218,17 +232,7 @@ client.on('message', async msg => {
                 await db.collection('conversations').deleteOne({ userId: senderId });
                 userSession = null;
             }
-            if (!user && !['cancel', 'restore'].some(c => lowerCaseText.startsWith(c))) {
-                const welcomePrompts = [
-                    "👋 Welcome! It looks like you're new here. Let's set up your brand first.\n\nWhat is your business name?",
-                    "Hello! To get started, please tell me your business name."
-                ];
-                await sendMessageWithDelay(msg, getRandomReply(welcomePrompts));
-                await db.collection('conversations').insertOne({ userId: senderId, state: 'awaiting_brand_name', data: {} });
-                processingUsers.delete(senderId);
-                return;
-            }
-
+           
             const subscriptionActive = isSubscriptionActive(user, ADMIN_NUMBERS);
             if (!subscriptionActive && premiumCommands.includes(lowerCaseText) && user && user.receiptCount >= FREE_TRIAL_LIMIT) {
                 await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'awaiting_payment_decision' } }, { upsert: true });
@@ -399,13 +403,6 @@ client.on('message', async msg => {
                 case 'in_support_conversation':
                     await handleTicketResponse(msg, userSession);
                     break;
-                
-                case 'awaiting_brand_name': {
-                    await db.collection('users').insertOne({ userId: senderId, brandName: text, onboardingComplete: false, receiptCount: 0, isPaid: false, createdAt: new Date() });
-                    await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'awaiting_brand_color' } });
-                    await sendMessageWithDelay(msg, `Great! Your brand is "${text}".\n\nWhat's your brand's main color? (e.g., #1D4ED8 or "blue")`);
-                    break;
-                }
                 case 'awaiting_brand_color': {
                     await db.collection('users').updateOne({ userId: senderId }, { $set: { brandColor: text } });
                     await db.collection('conversations').updateOne({ userId: senderId }, { $set: { state: 'awaiting_logo' } });
@@ -700,12 +697,8 @@ client.on('message', async msg => {
                 }
             }
         } else {
-            if (!user) {
-                await sendMessageWithDelay(msg, "👋 Welcome to SmartReceipt!\n\nLet's get you set up. First, what is your business name?");
-                await db.collection('conversations').insertOne({ userId: senderId, state: 'awaiting_brand_name', data: {} });
-            } else {
-                await sendMessageWithDelay(msg, `Hi ${user.brandName}!\n\nHow can I help you today? Type *'commands'* to see all available options.`);
-            }
+            // This is the default reply for an EXISTING user who is not in a conversation
+            await sendMessageWithDelay(msg, `Hi ${user.brandName}!\n\nHow can I help you today? Type *'commands'* to see all available options.`);
         }
     } catch (err) {
         console.error("An error occurred in message handler:", err);
