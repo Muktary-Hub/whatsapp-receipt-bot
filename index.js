@@ -143,15 +143,7 @@ const commands = ['new receipt', 'changereceipt', 'stats', 'history', 'edit', 'e
 const premiumCommands = ['new receipt', 'edit', 'export'];
 
 client.on('message', async msg => {
-    // --- TEMPORARY CODE TO GET GROUP ID (REMOVE AFTER USE) ---
-    const chat = await msg.getChat();
-    if (chat.isGroup) {
-        console.log('--- GROUP DETECTED ---');
-        console.log(`Group Name: ${chat.name}`);
-        console.log(`Group ID: ${chat.id._serialized}`);
-        console.log('----------------------');
-    }
-    // --- END OF TEMPORARY CODE ---
+    
 
     if (chat.isGroup) {
         return;
@@ -184,7 +176,7 @@ client.on('message', async msg => {
                 // YOU MUST REPLACE THE PLACEHOLDER BELOW WITH YOUR ACTUAL WHATSAPP GROUP ID.
                 // IF YOU DON'T, NEW USER REGISTRATION WILL FAIL FOR EVERYONE.
                 // Example: '1234567890-12345678@g.us'
-                const REQUIRED_WHATSAPP_GROUP_ID = 'YOUR_GROUP_ID@g.us';
+                const REQUIRED_WHATSAPP_GROUP_ID = '120363422560323912@g.us';
 
                 try {
                     const groupChat = await client.getChatById(REQUIRED_WHATSAPP_GROUP_ID);
