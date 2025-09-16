@@ -143,7 +143,7 @@ const commands = ['new receipt', 'changereceipt', 'stats', 'history', 'edit', 'e
 const premiumCommands = ['new receipt', 'edit', 'export'];
 
 client.on('message', async msg => {
-    
+ const chat = await msg.getChat(); //
 
     if (chat.isGroup) {
         return;
