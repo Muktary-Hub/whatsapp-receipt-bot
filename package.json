@@ -4,7 +4,7 @@
   "description": "A WhatsApp bot for generating receipts.",
   "main": "index.js",
   "scripts": {
-    "start": "node ManualUpdate.js"
+    "start": "node index.js"
   },
   "dependencies": {
     "whatsapp-web.js": "^1.23.0",
