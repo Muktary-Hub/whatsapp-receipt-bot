@@ -94,16 +94,22 @@ async function generateVirtualAccount(user) {
 
 app.get('/', (req, res) => res.status(200).send('SmartReceipt Bot Webhook Server is running.'));
 
+// --- CORRECTED WEBHOOK HANDLER ---
 app.post('/webhook', async (req, res) => {
     const db = getDB();
     try {
+        // 1. Immediately send a success response to prevent a timeout.
+        res.status(200).send('Webhook processed');
+
+        // 2. Now, process the data without making PaymentPoint wait.
         console.log("Webhook received from PaymentPoint!");
         const data = req.body;
 
-        // FIX #2: Added a robust check to prevent crashes on malformed webhook data.
         if (data && data.customer && typeof data.customer.email === 'string') {
             let phone = data.customer.email.split('@')[0];
-            if (phone.startsWith('0') && phone.length === 11) { phone = '234' + phone.substring(1); }
+            if (phone.startsWith('0') && phone.length === 11) {
+                phone = '234' + phone.substring(1);
+            }
             const userId = `${phone}@c.us`;
             console.log(`Payment successfully matched to user: ${userId}`);
 
@@ -117,6 +123,7 @@ app.post('/webhook', async (req, res) => {
 
             if (result.modifiedCount > 0) {
                 console.log(`User ${userId} unlocked successfully until ${expiryDate.toLocaleDateString()}.`);
+                // This now runs in the background.
                 await client.sendMessage(userId, `✅ *Payment Confirmed!* Thank you.\n\nYour SmartReceipt subscription is now active until ${expiryDate.toLocaleDateString('en-NG', { year: 'numeric', month: 'long', day: 'numeric' })}.`);
             } else {
                  console.log(`Webhook processed, but no user found in DB with ID: ${userId}`);
@@ -124,10 +131,10 @@ app.post('/webhook', async (req, res) => {
         } else {
             console.warn("Webhook received with missing or invalid customer email.", data);
         }
-        res.status(200).send('Webhook processed');
     } catch (error) {
         console.error("Error processing webhook:", error);
-        res.status(500).send('Error processing webhook');
+        // We already sent a 200 response, so we only log the error.
+        // We cannot send another response here.
     }
 });
 
