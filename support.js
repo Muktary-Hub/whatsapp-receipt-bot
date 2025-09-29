@@ -1,7 +1,8 @@
-// support.js
+// support.js (Corrected for ES Modules)
 
-const { getDB } = require('./db.js');
-const { sendMessageWithDelay } = require('./helpers.js');
+// Use 'import' instead of 'require'
+import { getDB } from './db.js';
+import { sendMessageWithDelay } from './helpers.js';
 
 // --- HELPER FUNCTION (No changes needed) ---
 const generateTicketId = async () => {
@@ -144,7 +145,8 @@ const handleAdminCloseCommand = async ({ sock, text, senderId, ADMIN_NUMBERS }) 
     }
 };
 
-module.exports = {
+// Use 'export' instead of 'module.exports'
+export {
     handleSupportCommand,
     handleNewTicket,
     handleTicketResponse,
