@@ -1,4 +1,6 @@
 // index.js (Final, Complete Version with All Logic and Fixes)
+// NOTE: The error you are facing is not in this file. It is due to an outdated version of the '@whiskeysockets/baileys' library.
+// To fix it, run `npm install @whiskeysockets/baileys@latest` in your terminal, then commit the updated package.json and package-lock.json files and redeploy.
 
 // --- Dependencies ---
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers, downloadMediaMessage } = require('@whiskeysockets/baileys');
