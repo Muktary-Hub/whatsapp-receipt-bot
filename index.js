@@ -53,6 +53,7 @@ app.use(cors(corsOptions));
 let sock;
 let receiptBrowser;
 const processingUsers = new Set();
+let server; // Define server variable to manage it
 
 async function uploadLogo(mediaBuffer) {
     try {
@@ -217,7 +218,7 @@ async function handleMessages(m) {
             await handleSupportCommand({ sock, senderId });
             processingUsers.delete(senderId); return;
         }
-        
+
         const commands = ['new receipt', 'changereceipt', 'stats', 'history', 'edit', 'export', 'add product', 'products', 'format', 'mybrand', 'cancel', 'commands', 'support', 'backup', 'restore', 'settings'];
         const premiumCommands = ['new receipt', 'edit', 'export'];
         const isCommand = commands.includes(lowerCaseText) || lowerCaseText.startsWith('remove product') || lowerCaseText.startsWith('restore');
@@ -883,7 +884,11 @@ async function startBot() {
         
         sock.ev.on('messages.upsert', handleMessages);
         
-        app.listen(PORT, () => console.log(`Webhook server listening on port ${PORT}`));
+        // --- FIX for EADDRINUSE ---
+        // Only start the server if it's not already running
+        if (!server) {
+            server = app.listen(PORT, () => console.log(`Webhook server listening on port ${PORT}`));
+        }
 
     } catch (error) {
         console.error("Failed to start the bot:", error);
@@ -901,6 +906,9 @@ const cleanup = async () => {
         if (receiptBrowser) {
             await receiptBrowser.close();
             console.log('Receipt browser closed.');
+        }
+        if (server) {
+            server.close(() => console.log('Webhook server closed.'));
         }
     } catch (error) {
         console.error("Error during cleanup:", error);
