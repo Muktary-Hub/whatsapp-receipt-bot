@@ -1,10 +1,14 @@
-const { MongoClient, ObjectId } = require('mongodb');
+// db.js (Final Corrected Version for ES Modules)
+
+import { MongoClient, ObjectId } from 'mongodb';
+
 const MONGO_URI = process.env.MONGO_URI;
 const DB_NAME = 'receiptBot';
 
 let db;
 
-const connectToDB = async () => {
+// Add 'export' before the function
+export const connectToDB = async () => {
     try {
         const client = new MongoClient(MONGO_URI);
         await client.connect();
@@ -16,6 +20,8 @@ const connectToDB = async () => {
     }
 };
 
-const getDB = () => db;
+// Add 'export' before the function
+export const getDB = () => db;
 
-module.exports = { connectToDB, getDB, ObjectId };
+// We also need to export ObjectId separately
+export { ObjectId };
