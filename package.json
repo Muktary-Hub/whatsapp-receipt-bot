@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "A WhatsApp bot for generating receipts, using Baileys and Puppeteer.",
   "main": "index.js",
+  "type": "module",
   "scripts": {
     "start": "node index.js"
   },
