@@ -1,4 +1,4 @@
-// helpers.js
+// helpers.js (Corrected for ES Modules)
 
 const getRandomReply = (replies) => {
     return replies[Math.floor(Math.random() * replies.length)];
@@ -29,4 +29,5 @@ const isSubscriptionActive = (user, ADMIN_NUMBERS) => {
     return new Date() < new Date(user.subscriptionExpiryDate);
 };
 
-module.exports = { getRandomReply, sendMessageWithDelay, isSubscriptionActive };
+// Use 'export' instead of 'module.exports'
+export { getRandomReply, sendMessageWithDelay, isSubscriptionActive };
