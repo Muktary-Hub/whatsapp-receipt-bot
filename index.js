@@ -1,14 +1,14 @@
-// index.js (Final, Complete Version with Typo Fixed)
+// index.js (Final, Complete Version with All Logic and Fixes)
 
 // --- Dependencies ---
-// --- FIX: Corrected the typo in 'baileys' ---
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers, downloadMediaMessage } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const axios = require('axios');
 const FormData = require('form-data');
 const express = require('express');
 const cors = require('cors');
-const crypto = require('crypto');
+// --- FIX: This was the missing import causing the crash ---
+const crypto = require('crypto'); 
 const puppeteer = require('puppeteer');
 
 // --- Local Modules ---
@@ -217,7 +217,7 @@ async function handleMessages(m) {
             await handleSupportCommand({ sock, senderId });
             processingUsers.delete(senderId); return;
         }
-
+        
         const commands = ['new receipt', 'changereceipt', 'stats', 'history', 'edit', 'export', 'add product', 'products', 'format', 'mybrand', 'cancel', 'commands', 'support', 'backup', 'restore', 'settings'];
         const premiumCommands = ['new receipt', 'edit', 'export'];
         const isCommand = commands.includes(lowerCaseText) || lowerCaseText.startsWith('remove product') || lowerCaseText.startsWith('restore');
