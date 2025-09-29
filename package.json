@@ -9,7 +9,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.8.0",
+    "@whiskeysockets/baileys": "^6.7.19",
     "axios": "^1.7.2",
     "cors": "^2.8.5",
     "express": "^4.19.2",
