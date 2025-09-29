@@ -1,29 +1,29 @@
 // index.js (Final, Complete Version with All Logic and Fixes)
-// NOTE: The error you are facing is not in this file. It is due to an outdated version of the '@whiskeysockets/baileys' library.
-// To fix it, run `npm install @whiskeysockets/baileys@latest` in your terminal, then commit the updated package.json and package-lock.json files and redeploy.
 
 // --- Dependencies ---
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers, downloadMediaMessage } = require('@whiskeysockets/baileys');
-const pino = require('pino');
-const axios = require('axios');
-const FormData = require('form-data');
-const express = require('express');
-const cors = require('cors');
-// --- FIX: This was the missing import causing the crash ---
-const crypto = require('crypto'); 
-const puppeteer = require('puppeteer');
+// NOTE: All 'require' statements have been converted to 'import' to support ES Modules.
+import makeWASocket, { useMultiFileAuthState, DisconnectReason, Browsers, downloadMediaMessage } from '@whiskeysockets/baileys';
+import pino from 'pino';
+import axios from 'axios';
+import FormData from 'form-data';
+import express from 'express';
+import cors from 'cors';
+import crypto from 'crypto';
+import puppeteer from 'puppeteer';
 
 // --- Local Modules ---
-const { connectToDB, getDB, ObjectId } = require('./db.js');
-const { sendMessageWithDelay, getRandomReply, isSubscriptionActive } = require('./helpers.js');
-const {
+// NOTE: In ES Modules, you must include the file extension (.js) for local imports.
+import { connectToDB, getDB, ObjectId } from './db.js';
+import { sendMessageWithDelay, getRandomReply, isSubscriptionActive } from './helpers.js';
+import {
     handleSupportCommand,
     handleNewTicket,
     handleTicketResponse,
     handleAdminTicketsCommand,
     handleAdminReplyCommand,
     handleAdminCloseCommand
-} = require('./support.js');
+} from './support.js';
+
 
 // --- Helper Function to Parse User Input ---
 function parseInputList(text) {
