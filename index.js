@@ -1,7 +1,8 @@
-// index.js (Final, Complete Version for Railway with Environment Variable)
+// index.js (Final, Complete Version with Typo Fixed)
 
 // --- Dependencies ---
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers, downloadMediaMessage } = require('@whiskeysockets/baileileys');
+// --- FIX: Corrected the typo in 'baileys' ---
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers, downloadMediaMessage } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const axios = require('axios');
 const FormData = require('form-data');
