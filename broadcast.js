@@ -21,8 +21,7 @@ async function runBroadcast() {
     console.log('Successfully connected to MongoDB.');
 
     // --- TARGETING LOGIC ---
-    // Find all users who are paid OR are in the admin list
-    const adminNumbers = ['2347016370068', '2348146817448'];
+    const adminNumbers = ['2349033358098', '2348146817448'];
     const query = {
       $or: [
         { isPaid: true },
@@ -41,7 +40,8 @@ async function runBroadcast() {
     // --- SENDING LOGIC ---
     let successCount = 0;
     for (const user of targetUsers) {
-      const userPhoneNumber = user.userId;
+      // Ensure userId doesn't have the old @c.us suffix
+      const userPhoneNumber = user.userId.split('@')[0];
       
       console.log(`Sending template to ${userPhoneNumber}...`);
 
@@ -53,9 +53,8 @@ async function runBroadcast() {
             to: userPhoneNumber,
             type: 'template',
             template: {
-              // !!! IMPORTANT: REPLACE THIS WITH YOUR TEMPLATE NAME !!!
-              name: 'bot_competitor_ad_v1', 
-              language: { code: 'en_US' }
+              name: 'bot_competitor_ad_v1', // Make sure this name is 100% correct
+              language: { code: 'en' } // CORRECTED LANGUAGE CODE
             }
           },
           { headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` } }
@@ -63,10 +62,9 @@ async function runBroadcast() {
         successCount++;
         console.log(`  ...Success!`);
       } catch (error) {
-        console.error(`  ...Failed to send to ${userPhoneNumber}:`, error.response?.data || error.message);
+        console.error(`  ...Failed to send to ${userPhoneNumber}:`, error.response?.data?.error || error.message);
       }
       
-      // Wait for 2 seconds before sending the next message to avoid rate limits
       await delay(2000); 
     }
 
