@@ -1,11 +1,12 @@
 {
   "name": "whatsapp-receipt-bot-baileys",
   "version": "1.0.0",
-  "description": "A WhatsApp bot for generating receipts, using Baileys and Puppeteer.",
+  "description": "A WhatsApp bot for generating receipts, using the official WhatsApp Cloud API and Puppeteer.",
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "start": "node index.js"
+    "start": "node broadcast.js",
+    "broadcast": "node broadcast.js"
   },
   "author": "",
   "license": "ISC",
@@ -13,7 +14,6 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.7.19",
     "axios": "^1.7.2",
     "cors": "^2.8.5",
     "express": "^4.19.2",
