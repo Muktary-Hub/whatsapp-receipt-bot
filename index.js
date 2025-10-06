@@ -111,8 +111,8 @@ function parseInputList(text) {
     return normalizedText.split(',').map(part => part.trim()).filter(part => part.length > 0);
 }
 
-const SUBSCRIPTION_FEE = 2000;
-const FREE_TRIAL_LIMIT = 2;
+const SUBSCRIPTION_FEE = 3000;
+const FREE_TRIAL_LIMIT = 1;
 const FREE_EDIT_LIMIT = 1;
 
 async function uploadLogo(mediaBuffer) {
